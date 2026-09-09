@@ -10,6 +10,7 @@ steps, and known risks. Update this file rather than spawning new docs.
 - [5. Data model](#5-data-model)
 - [6. Risks & improvements](#6-risks--improvements)
 - [7. Scalability](#7-scalability)
+- [8. Build order & conventions](#8-build-order--conventions)
 
 ---
 
@@ -426,8 +427,9 @@ scopes · `#23` retention job + free-disk precheck · `#30` long-path key + AV e
   to a free bucket (B2 10 GB / R2); keep 14 daily + 8 weekly; quarterly test restore.
 - **#43 [P1] Reproducibility.** Commit `uv.lock`; pin FFmpeg build; pin model revision hashes
   in `config.yaml`; record tool versions per `render` row.
-- **#44 [P0] Content-safety gate.** `config.yaml` topic blocklist; `sensitivity_check.md`
-  runs before scripting and can veto a candidate; borderline → manual approval.
+- **#44 [P0] Content-safety gate.** Two-tier `config.yaml` lists — `auto_veto` (candidate
+  skipped, no human) and `manual_review` (human yes/no before scripting). `sensitivity_check.md`
+  classifies each candidate as pass / manual_review / veto; anything uncertain → manual_review.
 - **#45 [P0] Legal cushion.** On-screen citations; description source + attribution block;
   "educational commentary" framing; a review step that genuinely watches the whole video —
   quality control and policy defense in one.
@@ -454,3 +456,61 @@ invoked, #12) · ONNX + CT2 with no PyTorch · single machine for 10× this volu
 | **Multi-channel** | One `channel` row | Insert more rows + assets/prompts; everything is per-channel | No migration — FK already everywhere. |
 | **Single-machine failure** | Nightly `pg_dump` + media backup | Same; fsspec already cloud → only Postgres is local | Move Postgres to a managed instance (connection-string change). |
 | **Human review** | ~6 sessions/month | Real work; dashboard batch-approve; unattended build continues regardless | Operations limit, not a stack limit. |
+
+---
+
+## 8. Build order & conventions
+
+Decisions for when `app/` code starts. New tooling files (`justfile`,
+`.pre-commit-config.yaml`, `.github/workflows/ci.yml`, `config.schema.json`) are added in the
+step that first needs them, not before.
+
+### 8.1 Conventions (apply from the first module)
+- **Env:** `uv` only; `uv run <cmd>` everywhere (no manual venv activation). `.python-version`
+  pins 3.11.
+- **Config flow:** a pydantic `Settings` / `ChannelConfig` model **is** the schema.
+  `scripts/load_config.py` validates `config.yaml`, writes it to the `channel` row with a
+  bumped `config_version`, and dumps `config.schema.json` (`model_json_schema()`) for editor
+  validation. Runtime code reads config **only from the DB**, never the file.
+- **Status:** one `Status` `StrEnum` in `app/status.py`, used by DB columns, the dashboard,
+  and the CLI. No bare status strings anywhere.
+- **HTTP:** one factory in `app/http.py` — httpx client + `hishel` disk cache + `User-Agent`
+  from `WIKIMEDIA_CONTACT` + timeouts + a shared `tenacity` retry preset. Every API module
+  imports it; no ad-hoc clients.
+- **Storage:** all file I/O through one `app/storage.py` helper over `fsspec`, rooted at
+  `STORAGE_BASE` (`work/ output/ cache/ logs/` beneath it). `assets/` is read-only input.
+  Write to `*.tmp` + atomic rename; never a bare path.
+- **Logging:** `loguru` — JSON sink to `data/logs/`, pretty console sink. Secrets filtered
+  out. The dashboard tails the JSON log.
+- **Secrets:** `pydantic-settings` from `.env`; never logged, never in a `render`/`upload`
+  row.
+
+### 8.2 Efficiency measures (bake in, don't retrofit)
+- **LLM cache:** `llm_cache` table keyed by `sha256(model + prompt + inputs)` → response.
+  Dev re-runs cost zero tokens. `api_quota_ledger` also records Gemini tokens + grounded-call
+  counts per video.
+- **Resident models:** the worker loads Kokoro + faster-whisper **once** at startup
+  (module-level singletons), not per task.
+- **Render:** `encoder: auto` probes `h264_nvenc` once, falls back to `libx264`;
+  `render_concurrency` from config (default 1); staged intermediates, each `ffprobe`-checked
+  (#12).
+- **Scheduling:** procrastinate periodic tasks — `discover` weekly, `advance` daily; all
+  times resolved in `config.timezone`.
+- **Idempotency:** every stage checks "already done?" in the DB before working; jobs and
+  `*.tmp` stuck `in_progress` are swept on worker startup (#31).
+
+### 8.3 Suggested module / build sequence
+1. `app/config.py` + `app/db.py` (SQLAlchemy models, all tables from §5) + Alembic init +
+   `scripts/load_config.py`.
+2. `app/status.py`, `app/http.py`, `app/storage.py`, `app/queue.py` (procrastinate app),
+   `app/notify.py` (apprise).
+3. `scripts/get_youtube_token.py`, `scripts/doctor.py` + the nine `check_*` probes.
+4. `tests/` with golden fixtures committed now — `sample_script.md` → expected `sample.srt`
+   + expected Shorts cut list; `ffprobe` assertions helper.
+5. `.pre-commit-config.yaml` (ruff, ruff-format, gitleaks) + `.github/workflows/ci.yml`
+   (ruff + pytest, no secrets needed for this tier).
+6. `justfile`: `setup sync smoke run worker dash test fmt lint`.
+7. Stages, in pipeline order: `discover → rank → research → factcheck → script → segment →
+   images → tts → align → assemble → shorts → metadata → thumbnail → review → upload →
+   analytics`. Each is one procrastinate task that enqueues the next.
+8. `app/web.py` review dashboard last (it only reads state the stages produce).

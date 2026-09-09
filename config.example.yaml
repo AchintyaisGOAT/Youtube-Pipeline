@@ -21,16 +21,19 @@ topics:
   in_scope:
     - "world history pre-2000"
     - "history of science and technology"
-  # DESIGN.md #44 — auto-veto before scripting. Tune this: the goal is to exclude
-  # recent / still-politically-live / contested-framing topics, NOT all conflict
-  # (Rome, WWII, colonial history are in scope if framed factually with sources).
-  blocklist:
+  # DESIGN.md #44 — two tiers. Well-sourced history legitimately covers Rome, WWII,
+  # colonialism etc., so those are NOT blanket-banned; only recent / politically-live
+  # material is hard-vetoed, and heavy subjects are routed to a human yes/no.
+  auto_veto:            # candidate is skipped, no human involved
     - "events within the last 10 years"
     - "active elections / party politics"
     - "ongoing armed conflicts"
-    - "living-person controversy or allegations"
-    - "medical or legal advice"
-    - "genocide / atrocity as primary subject"
+    - "living-person allegations or controversy"
+    - "medical, legal, or financial advice"
+  manual_review:        # allowed, but a human approves/rejects before scripting
+    - "genocide / atrocity as the primary subject"
+    - "religion as the primary subject"
+    - "still-actively-disputed historical framing"
 
 discovery:
   primary: "wikimedia_pageviews"   # DESIGN.md #26
