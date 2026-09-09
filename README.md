@@ -1,20 +1,9 @@
 # YouTube Pipeline
 
-Automated, mostly-free pipeline that takes a trending history/education topic and produces a
-~7-minute long-form video plus 7 Shorts cut from it, with one human review gate before upload.
+Automated, near-$0 pipeline: a trending history/education topic → a ~7-minute long-form video
++ 7 Shorts cut from it → one human review gate → YouTube. Fully scheduled.
 
-> **Status:** planning / scaffolding. Stack is frozen; application code not yet written.
-
-## Documentation
-
-| Doc | What's in it |
-|---|---|
-| [STACK.md](STACK.md) | The locked technology decisions, layer by layer, with rejected alternatives and a scalability analysis. |
-| [INPUTS.md](INPUTS.md) | Every input the project needs — API keys, local software, asset libraries, manual config, the review gate. |
-| [INSTALL.md](INSTALL.md) | Step-by-step Windows 11 native install (uv, PostgreSQL, FFmpeg, models, Google/YouTube setup, services). |
-| [REVIEW.md](REVIEW.md) | 47 known risks & improvements, tagged P0/P1/P2, with a pre-launch checklist. |
-
-## Pipeline at a glance
+> **Status:** scaffolding. Stack is frozen; application code not yet written.
 
 ```
 daily trigger → trend discovery → LLM research → fact-check → script (+[SHORT] spans)
@@ -23,47 +12,37 @@ daily trigger → trend discovery → LLM research → fact-check → script (+[
   → human review gate → YouTube upload → analytics pulled back
 ```
 
-## Stack summary
+**Everything is in [DESIGN.md](DESIGN.md)** — stack, inputs, install steps, data model,
+risks, scalability. Config templates: [`.env.example`](.env.example),
+[`config.example.yaml`](config.example.yaml).
 
-- **Language:** Python 3.11, managed with `uv` (locked `uv.lock`)
-- **Data + queue:** PostgreSQL 16 + SQLAlchemy/Alembic + procrastinate (no Redis)
-- **Brain:** Google Gemini 2.5 Flash (cloud, free tier) + Google Search grounding
-- **Local AI:** Kokoro TTS (ONNX) + faster-whisper (CTranslate2) — GPU, no PyTorch
-- **Media:** FFmpeg (NVENC + libass), Pillow, pysubs2
-- **Images:** Wikimedia Commons, Library of Congress, Smithsonian, Met (public-domain / CC0)
-- **Publish:** YouTube Data API v3 + YouTube Analytics API v2
-- **Serve/ops:** FastAPI review dashboard, NSSM Windows services, fsspec storage abstraction
-
-See [STACK.md](STACK.md) for the full picture.
-
-## Getting started
-
-Follow [INSTALL.md](INSTALL.md) top to bottom. Short version:
+## Quick start
 
 ```powershell
 winget install astral-sh.uv Git.Git Gyan.FFmpeg PostgreSQL.PostgreSQL.16 NSSM.NSSM
 uv venv --python 3.11
 .\.venv\Scripts\Activate.ps1
 uv sync
-copy .env.example .env   # then fill it in
+copy .env.example .env               # fill in — see DESIGN.md §3
+copy config.example.yaml config.yaml # edit — see DESIGN.md §3.4
 alembic upgrade head
 procrastinate schema --apply
 python scripts\load_config.py config.yaml
 ```
 
-## Repository layout (planned)
+Full walkthrough: [DESIGN.md §4](DESIGN.md#4-install-windows-11-native).
+
+## Layout
 
 ```
 app/            pipeline stages, queue app, web dashboard
-scripts/        one-off + operational scripts (token setup, smoke tests, run_pipeline)
-prompts/        Gemini prompt templates
+scripts/        token setup, smoke tests, run_pipeline, load_config
+prompts/        Gemini prompt templates (added in build phase)
 migrations/     Alembic migrations
-assets/         curated local media libraries (git-ignored except .gitkeep)
-docs/           design docs (the .md files above)
-config.yaml     single source of truth for channel/behaviour config
-pyproject.toml  dependencies (installed via uv)
+assets/         curated local media (git-ignored)
+DESIGN.md       the one design + setup reference
+config.yaml     single source of truth (git-ignored; see config.example.yaml)
+pyproject.toml  dependencies (uv)
 ```
-
-## License
 
 Private project — no license granted.

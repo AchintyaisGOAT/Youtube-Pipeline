@@ -7,32 +7,23 @@ token.json
 *.pem
 *.key
 
-# ---- Data / media (large, regenerable) ----
+# ---- Local config (from config.example.yaml) ----
+config.yaml
+
+# ---- Data / media / weights (large, regenerable) ----
 data/
 work/
 output/
-assets/music/
-assets/sfx/
-assets/branding/
-assets/thumbnails/
-assets/fonts/
-!assets/**/.gitkeep
+assets/
+models/
 *.mp4
 *.mov
 *.wav
 *.mp3
-*.png
-*.jpg
-*.jpeg
-!docs/**/*.png
-
-# ---- Model weights / caches ----
-models/
 *.onnx
 *.bin
 *.ckpt
 .cache/
-huggingface/
 
 # ---- Python ----
 .venv/
@@ -55,5 +46,4 @@ logs/
 .DS_Store
 Thumbs.db
 .idea/
-.vscode/*
-!.vscode/extensions.json
+.vscode/
