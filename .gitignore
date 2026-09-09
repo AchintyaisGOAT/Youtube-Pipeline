@@ -37,7 +37,6 @@ build/
 dist/
 
 # ---- Logs / DB dumps ----
-logs/
 *.log
 *.dump
 *.sql
@@ -46,4 +45,6 @@ logs/
 .DS_Store
 Thumbs.db
 .idea/
-.vscode/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json

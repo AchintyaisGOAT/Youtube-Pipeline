@@ -1,0 +1,13 @@
+# Normalize line endings — repo is LF, no CRLF churn on Windows
+* text=auto eol=lf
+
+# Explicitly binary (never touch)
+*.png binary
+*.jpg binary
+*.mp4 binary
+*.wav binary
+*.mp3 binary
+*.onnx binary
+*.ttf binary
+*.otf binary
+*.dump binary

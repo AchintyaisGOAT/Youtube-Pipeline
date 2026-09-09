@@ -19,10 +19,11 @@ Automated, near-$0 pipeline: a trending history/education topic → a ~7-minute 
 + 7 Shorts cut from it → one human review gate → YouTube. Fully scheduled.
 
 ```
-daily trigger → trend discovery → LLM research → fact-check → script (+[SHORT] spans)
-  → segment plan → open-access image fetch → Kokoro TTS → Whisper word-timing
-  → FFmpeg assemble (slideshow + subs + ducked music) → long-form + 7 Shorts
-  → human review gate → YouTube upload → analytics pulled back
+weekly discovery + daily advance tick → trend rank → LLM research → fact-check
+  → script (+[SHORT] spans) → segment plan → open-access image fetch → Kokoro TTS
+  → Whisper word-timing → FFmpeg assemble (slideshow + subs + ducked music)
+  → long-form + 7 Shorts → metadata + thumbnail → human review gate
+  → YouTube upload → analytics pulled back (48 h, 7 d)
 ```
 
 **Fixed choices:** Windows 11 · 1× NVIDIA GPU 8–12 GB · Python 3.11 · $0 running cost ·
@@ -47,7 +48,7 @@ this section — don't re-open them.
 | **Orchestration** | pipeline module (project code), tenacity, aiolimiter, loguru | Each stage-task enqueues the next; in-task retry for flaky calls; rate limiting; logging. |
 | **Cloud APIs** | Gemini 2.5 Flash (`google-genai`) + Search grounding; YouTube Data API v3; YouTube Analytics API v2; pytrends (best-effort) | Research/script/fact-check/metadata; upload + trend signal; post-publish analytics. |
 | **Image APIs** | Wikimedia Commons, Library of Congress, Smithsonian (free key), Met; `httpx` + `hishel` cache | Public-domain / CC0 imagery only. |
-| **Local AI** | **kokoro-onnx** + soundfile; **faster-whisper** `small.en`; onnxruntime-gpu; CTranslate2; huggingface_hub | TTS narration; word-level timestamps for subs/cuts. GPU via ONNX/CT2 — **no PyTorch**. CPU fallback fine at this volume. |
+| **Local AI** | **kokoro-onnx[gpu]** + soundfile; **faster-whisper** `small.en`; CTranslate2; huggingface-hub | TTS narration; word-level timestamps for subs/cuts. GPU via ONNX/CT2 — **no PyTorch**. CPU fallback fine at this volume. *Install note:* faster-whisper pulls CPU `onnxruntime` for its VAD; after `uv sync` confirm `onnxruntime.get_available_providers()` lists `CUDAExecutionProvider`, else uninstall the bare `onnxruntime`. |
 | **Media assembly** | FFmpeg + FFprobe (libass, NVENC); internal subprocess command-builder; Pillow; pysubs2 | Slideshow + Ken Burns + transitions + audio mix + loudnorm + burn subs + export + Shorts crop/cut. No third-party FFmpeg wrapper. |
 | **Review + publish** | FastAPI + Uvicorn + Jinja2; YouTube Data API v3 | Local dashboard: review queue, metadata editor, status board. Then upload. |
 | **Unattended** | procrastinate worker + Uvicorn dashboard, run as **NSSM** Windows services; **fsspec** storage abstraction | Auto-restart on boot/crash; media paths are `file://` now, `s3://`/`b2://` later with no code change. |
@@ -90,9 +91,9 @@ NVIDIA Studio driver · NSSM`
 | 2 | **YouTube channel** | youtube.com → Create channel | Phone-verify (raises upload limits). Channel ID: Studio → Settings → Channel → Advanced → `YOUTUBE_CHANNEL_ID`. |
 | 3 | **Second Google account** (Cloud + Gemini) | accounts.google.com | Deliberately separate from the channel — risk #8. |
 | 4 | **Google Cloud project** | console.cloud.google.com (acct #3) | Name `yt-pipeline`. No billing needed. |
-| 5 | `GEMINI_API_KEY` | aistudio.google.com (acct #3) | Gemini 2.5 Flash free: ~15 RPM, 250 req/day, 250K TPM. Grounding has a smaller separate daily free cap. |
+| 5 | `GEMINI_API_KEY` | aistudio.google.com (acct #3) | Gemini 2.5 Flash free tier is roughly low-tens RPM / low-hundreds req/day — **verify current numbers in AI Studio**, they change. Grounding has a smaller separate daily free cap. |
 | 6 | `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` | Cloud Console → Credentials → OAuth client ID → **Desktop app** → `client_secret.json` | Enable **YouTube Data API v3** + **YouTube Analytics API** first. |
-| 7 | `YOUTUBE_REFRESH_TOKEN` | `python scripts/get_youtube_token.py` (browser login) | **Minimum scopes:** `youtube.upload`, `youtube.readonly`, `yt-analytics.readonly`. |
+| 7 | `YOUTUBE_REFRESH_TOKEN` | `uv run python scripts/get_youtube_token.py` (browser login) | Scopes: `youtube.upload` (insert) **+ `youtube.force-ssl`** (needed to set thumbnail, add to playlist, update metadata) **+ `yt-analytics.readonly`**. `youtube.upload` alone cannot do post-upload edits. |
 | 8 | `SMITHSONIAN_API_KEY` | api.data.gov/signup | Free, instant. Shared limit 1000 req/hr → treated as optional. |
 | 9 | `WIKIMEDIA_CONTACT` | you choose an email/URL string | **Required** in the User-Agent or Wikimedia returns 403. |
 
@@ -137,9 +138,9 @@ licenses → confirm schedule. Analytics pull back automatically at 48 h and 7 d
 
 ### 3.6 `.env` keys
 
-See `.env.example`. Git-ignored: `.env`, `client_secret.json`, `token.json`, `assets/`,
-`work/`, `output/`, `data/`. **`token.json` grants upload rights — never let it into a backup
-or cloud-synced folder** (risk #19).
+See `.env.example`. Git-ignored: `.env`, `config.yaml`, `client_secret.json`, `token.json`,
+`assets/`, `data/` (which holds `work/`, `output/`, `cache/`, `logs/`). **`token.json` grants
+upload rights — never let it into a backup or cloud-synced folder** (risk #19).
 
 ---
 
@@ -154,8 +155,8 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
   -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
 ```
-After install, add `work/ output/ data/` to Windows Security → Exclusions (AV locking files
-mid-render breaks FFmpeg — risk #30).
+After install, add `D:\Youtube_Pipeline\data` and `...\assets` to Windows Security →
+Exclusions (AV locking files mid-render breaks FFmpeg — risk #30).
 
 ### 4.1 Base tools
 ```powershell
@@ -183,12 +184,13 @@ psql -U ytpipe -d ytpipe -h localhost -c "select version();"
 ### 4.3 Project
 ```powershell
 cd D:\Youtube_Pipeline
-uv venv --python 3.11
-.\.venv\Scripts\Activate.ps1
-uv sync
-python -c "import onnxruntime as ort; print(ort.get_available_providers())"  # expect CUDAExecutionProvider
-mkdir data, work, output, assets\music, assets\sfx, assets\fonts, assets\branding, assets\thumbnails
+uv sync                      # reads .python-version (3.11), builds .venv, installs pinned deps
+uv run python -c "import onnxruntime as ort; print(ort.get_available_providers())"  # expect CUDAExecutionProvider
+mkdir data\work, data\output, data\cache, data\logs, `
+      assets\music, assets\sfx, assets\fonts, assets\branding, assets\thumbnails
 ```
+Prefer `uv run <cmd>` everywhere below instead of activating the venv. Media lives under
+`STORAGE_BASE` (`data/`); `assets/` is separate read-only input.
 
 ### 4.4 Google / YouTube
 1. Two Google accounts (§3.1 #1 and #3), 2FA on both.
@@ -202,19 +204,19 @@ mkdir data, work, output, assets\music, assets\sfx, assets\fonts, assets\brandin
    copy the printed refresh token into `.env` (`token.json` also written).
 6. api.data.gov/signup → `SMITHSONIAN_API_KEY` into `.env`.
 
-### 4.5 Config + DB init
+### 4.5 Config + DB init  *(needs the build-phase `app/` + `scripts/` code)*
 ```powershell
 copy .env.example .env ; notepad .env          # fill everything; real WIKIMEDIA_CONTACT; pick one ALERT_URL
 copy config.example.yaml config.yaml ; notepad config.yaml
-alembic upgrade head
-procrastinate schema --apply                    # separate from Alembic — never autogenerate over procrastinate_*
-python scripts\load_config.py config.yaml
+uv run alembic upgrade head
+uv run procrastinate --app=app.queue.app schema --apply   # --app is required; keep separate from Alembic
+uv run python scripts\load_config.py config.yaml
 ```
 
-### 4.6 Smoke tests (`scripts/`, run individually)
-`check_db` · `check_gemini` · `check_youtube` · `check_trends` · `check_images "roman empire"`
-· `check_tts` · `check_whisper work\tts_test.wav "known text"` · `check_ffmpeg` · `check_alert`.
-All nine green → ready to build.
+### 4.6 Smoke tests
+`uv run python scripts\doctor.py` runs all of these and prints one green/red table:
+`check_db` · `check_gemini` · `check_youtube` · `check_trends` · `check_images` · `check_tts`
+· `check_whisper` · `check_ffmpeg` · `check_alert`. All green → ready to build.
 
 ### 4.7 First runs (safe)
 ```powershell
@@ -238,9 +240,13 @@ nssm start   YtPipeDashboard
 Dashboard → http://127.0.0.1:8765.
 
 ### 4.9 Backups (set up now — risk #9)
-Daily Scheduled Task: `pg_dump -U ytpipe -h localhost -Fc ytpipe -f E:\backups\ytpipe_%DATE%.dump`
-to a **different physical drive**; optionally `rclone copy output/ remote:bucket`. Test a
-restore quarterly.
+Daily Scheduled Task running PowerShell (not cmd — `%DATE%` is literal in PowerShell):
+```powershell
+$stamp = Get-Date -Format yyyy-MM-dd
+pg_dump -U ytpipe -h localhost -Fc ytpipe -f "E:\backups\ytpipe_$stamp.dump"
+```
+Target a **different physical drive**; optionally `rclone copy <STORAGE_BASE>/output remote:bucket`.
+Keep 14 daily + 8 weekly; test a restore into a scratch DB quarterly.
 
 ### 4.10 Troubleshooting
 
@@ -252,7 +258,7 @@ restore quarterly.
 | onnxruntime shows only `CPUExecutionProvider` | Update NVIDIA Studio driver; runs on CPU meanwhile |
 | `psql: could not connect` | `services.msc` → start `postgresql-x64-16` |
 | Alembic vs procrastinate table conflict | Apply `procrastinate schema --apply` separately; `include_object` filter in `env.py` |
-| FFmpeg "Permission denied" mid-render | AV exclusions for `work/ output/ data/` |
+| FFmpeg "Permission denied" mid-render | AV exclusions for `data\` and `assets\` |
 | Wikimedia 403 | `WIKIMEDIA_CONTACT` not a real contact string |
 | Gemini `RESOURCE_EXHAUSTED` | Daily free cap; retries next day or slow the schedule |
 | Upload OK but video Private, won't publish | Expected pre-audit — publish in Studio; submit the audit form later |
@@ -342,8 +348,9 @@ scopes · `#23` retention job + free-disk precheck · `#30` long-path key + AV e
   `mismatch_fallback_ratio`, use proportional per-sentence timing. Consider `stable-ts`
   (keeps faster-whisper backend).
 - **#15 [P1] Short lengths only known post-TTS.** Calibrate script word counts to Kokoro's
-  measured words/sec; after TTS, hard-gate — auto-trim to a sentence boundary or regenerate
-  the span. Never publish a Short over the platform limit.
+  measured words/sec; after TTS, hard-gate against the configured `max_seconds` (a style
+  choice — YouTube's Shorts ceiling is 180 s) — auto-trim to a sentence boundary or
+  regenerate the span.
 - **#16 [P1] Double-upload on retry.** Write an `upload` row `uploading` + `client_token`
   *before* the call; on retry, first search the channel for that token; procrastinate `lock`
   serializes uploads per channel.
@@ -353,8 +360,10 @@ scopes · `#23` retention job + free-disk precheck · `#30` long-path key + AV e
   `config_version` → app reads DB only → dashboard shows active version.
 - **#18 [P1] Alembic vs procrastinate.** Apply procrastinate schema separately; Alembic
   `include_object` filter ignores `procrastinate_*`; consider a dedicated Postgres schema.
-- **#19 [P0] Secret exposure.** Min OAuth scopes; `token.json` + `.env` out of every backup
-  and cloud-synced folder; optional DPAPI encryption of `token.json`.
+- **#19 [P0] Secret exposure.** Least-scope OAuth (`youtube.upload` + `youtube.force-ssl` +
+  `yt-analytics.readonly` — `force-ssl` is required for thumbnail/playlist/metadata writes);
+  `token.json` + `.env` out of every backup and cloud-synced folder; optional DPAPI
+  encryption of `token.json`.
 - **#20 [P1] In-process rate limiter** breaks with a 2nd worker. Stay single-worker until
   needed; then move the limiter to a Postgres token bucket (small change, documented trigger).
 

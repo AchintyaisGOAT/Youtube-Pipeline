@@ -1,8 +1,13 @@
+# yaml-language-server: $schema=./config.schema.json
 # Single source of truth for channel + behaviour config.
-# Copy to config.yaml, edit, then: python scripts/load_config.py config.yaml
+# Copy to config.yaml, edit, then: uv run python scripts/load_config.py config.yaml
 # (loads it into the `channel` DB row with an incrementing config_version)
+# Section refs like "DESIGN.md #NN" point at DESIGN.md section 6 (Risks & improvements).
 
 config_version: 1
+
+# All schedules and daily jobs use this timezone (DESIGN.md #16 was: none set).
+timezone: "America/New_York"
 
 channel:
   name: ""
@@ -16,18 +21,21 @@ topics:
   in_scope:
     - "world history pre-2000"
     - "history of science and technology"
-  blocklist:                       # REVIEW.md #44 — auto-veto before scripting
-    - "active politics"
-    - "ongoing armed conflict"
-    - "recent tragedies (last 5 years)"
-    - "atrocity / genocide history"
+  # DESIGN.md #44 — auto-veto before scripting. Tune this: the goal is to exclude
+  # recent / still-politically-live / contested-framing topics, NOT all conflict
+  # (Rome, WWII, colonial history are in scope if framed factually with sources).
+  blocklist:
+    - "events within the last 10 years"
+    - "active elections / party politics"
+    - "ongoing armed conflicts"
+    - "living-person controversy or allegations"
     - "medical or legal advice"
-    - "living-person controversy"
+    - "genocide / atrocity as primary subject"
 
 discovery:
-  primary: "wikimedia_pageviews"   # REVIEW.md #26
+  primary: "wikimedia_pageviews"   # DESIGN.md #26
   also: ["on_this_day", "reddit_history", "pytrends"]  # pytrends best-effort
-  run_at: "06:00"
+  run: "weekly Mon 06:00"          # DESIGN.md eff#7 — discovery is weekly; a daily tick advances queued work
   target_long_form_per_month: 6
 
 video:
@@ -37,58 +45,60 @@ video:
     fps: 30
   shorts:
     per_long_form: 7
-    max_seconds: 55
+    max_seconds: 55                # style choice, well under YouTube's 180s Shorts limit (DESIGN.md #15)
     resolution: [1080, 1920]
     fps: 30
   loudness_lufs: -14
   music_bed_lufs: -18
   image_seconds_min: 2.5
   image_seconds_max: 3.5
+  encoder: "auto"                  # auto = h264_nvenc if available else libx264 (DESIGN.md eff#8)
+  render_concurrency: 1           # consumer GPUs cap concurrent NVENC sessions
 
-voice:                             # Kokoro ONNX
+voice:                             # Kokoro ONNX — verify IDs against the kokoro-onnx v1.0 voice list
   primary: "bm_george"
   secondary_for_quotes: "bf_emma"
-  words_per_second: 2.6            # measured once, then calibrate script length (REVIEW.md #15)
+  words_per_second: 2.6            # measured once, then calibrate script length (DESIGN.md #15)
   paragraph_pause_ms: 400
 
 subtitles:
-  font: "Inter"
+  font_file: "assets/fonts/Inter-Regular.ttf"   # path, not family name — libass needs the file
   size: 48
   position: "bottom-center"
   max_lines: 2
   highlight_color: "#FFD23F"
   karaoke: true
-  upload_sidecar_srt: true         # REVIEW.md #36
+  upload_sidecar_srt: true         # DESIGN.md #36
 
 alignment:
   whisper_model: "small.en"
-  mismatch_fallback_ratio: 0.15    # REVIEW.md #14
+  mismatch_fallback_ratio: 0.15    # DESIGN.md #14
 
 images:
   sources: ["wikimedia", "loc", "met", "smithsonian"]  # smithsonian optional
-  license_allow: ["public-domain-us", "cc0"]           # REVIEW.md #4
+  license_allow: ["public-domain-us", "cc0"]           # DESIGN.md #4
   per_video_max: 180
 
 publish:
   category: "Education"
   made_for_kids: false
-  synthetic_content_disclosure: true   # REVIEW.md #2
+  synthetic_content_disclosure: true   # DESIGN.md #2
   api_visibility: "private"            # audit note — publish manually in Studio
   playlist_id: ""
-  schedule:
+  schedule:                            # times are in `timezone` above
     long_form: ["Tue 15:00", "Fri 15:00"]
     shorts: ["daily 12:00"]
 
 ops:
-  media_retention_days: 30            # REVIEW.md #23
+  media_retention_days: 30            # DESIGN.md #23
   delete_intermediates_on_success: true
   min_free_gb_before_render: 15
   alert_on_budget_pct: 80
-  backup_target: "E:/backups"         # REVIEW.md #9 / #42
+  backup_target: "E:/backups"         # DESIGN.md #9 / #42
 
-models:                               # pin revisions for reproducibility (REVIEW.md #43)
+models:                               # pin revisions for reproducibility (DESIGN.md #43)
   kokoro_revision: ""
   whisper_revision: ""
   ffmpeg_version: ""
 
-test_mode: true                       # REVIEW.md #32 — dry-run / unlisted until flipped
+test_mode: true                       # DESIGN.md #32 — dry-run / unlisted until flipped
