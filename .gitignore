@@ -1,0 +1,59 @@
+# ---- Secrets (never commit) ----
+.env
+.env.*
+!.env.example
+client_secret.json
+token.json
+*.pem
+*.key
+
+# ---- Data / media (large, regenerable) ----
+data/
+work/
+output/
+assets/music/
+assets/sfx/
+assets/branding/
+assets/thumbnails/
+assets/fonts/
+!assets/**/.gitkeep
+*.mp4
+*.mov
+*.wav
+*.mp3
+*.png
+*.jpg
+*.jpeg
+!docs/**/*.png
+
+# ---- Model weights / caches ----
+models/
+*.onnx
+*.bin
+*.ckpt
+.cache/
+huggingface/
+
+# ---- Python ----
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# ---- Logs / DB dumps ----
+logs/
+*.log
+*.dump
+*.sql
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

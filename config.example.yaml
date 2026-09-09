@@ -1,0 +1,94 @@
+# Single source of truth for channel + behaviour config.
+# Copy to config.yaml, edit, then: python scripts/load_config.py config.yaml
+# (loads it into the `channel` DB row with an incrementing config_version)
+
+config_version: 1
+
+channel:
+  name: ""
+  handle: ""
+  description: ""
+  audience: "curious adults who like well-sourced history"
+  tone: "authoritative, accessible, dry wit, never clickbait"
+  language: "en-US"
+
+topics:
+  in_scope:
+    - "world history pre-2000"
+    - "history of science and technology"
+  blocklist:                       # REVIEW.md #44 — auto-veto before scripting
+    - "active politics"
+    - "ongoing armed conflict"
+    - "recent tragedies (last 5 years)"
+    - "atrocity / genocide history"
+    - "medical or legal advice"
+    - "living-person controversy"
+
+discovery:
+  primary: "wikimedia_pageviews"   # REVIEW.md #26
+  also: ["on_this_day", "reddit_history", "pytrends"]  # pytrends best-effort
+  run_at: "06:00"
+  target_long_form_per_month: 6
+
+video:
+  long_form:
+    target_seconds: 420
+    resolution: [1920, 1080]
+    fps: 30
+  shorts:
+    per_long_form: 7
+    max_seconds: 55
+    resolution: [1080, 1920]
+    fps: 30
+  loudness_lufs: -14
+  music_bed_lufs: -18
+  image_seconds_min: 2.5
+  image_seconds_max: 3.5
+
+voice:                             # Kokoro ONNX
+  primary: "bm_george"
+  secondary_for_quotes: "bf_emma"
+  words_per_second: 2.6            # measured once, then calibrate script length (REVIEW.md #15)
+  paragraph_pause_ms: 400
+
+subtitles:
+  font: "Inter"
+  size: 48
+  position: "bottom-center"
+  max_lines: 2
+  highlight_color: "#FFD23F"
+  karaoke: true
+  upload_sidecar_srt: true         # REVIEW.md #36
+
+alignment:
+  whisper_model: "small.en"
+  mismatch_fallback_ratio: 0.15    # REVIEW.md #14
+
+images:
+  sources: ["wikimedia", "loc", "met", "smithsonian"]  # smithsonian optional
+  license_allow: ["public-domain-us", "cc0"]           # REVIEW.md #4
+  per_video_max: 180
+
+publish:
+  category: "Education"
+  made_for_kids: false
+  synthetic_content_disclosure: true   # REVIEW.md #2
+  api_visibility: "private"            # audit note — publish manually in Studio
+  playlist_id: ""
+  schedule:
+    long_form: ["Tue 15:00", "Fri 15:00"]
+    shorts: ["daily 12:00"]
+
+ops:
+  media_retention_days: 30            # REVIEW.md #23
+  delete_intermediates_on_success: true
+  min_free_gb_before_render: 15
+  alert_on_budget_pct: 80
+  backup_target: "E:/backups"         # REVIEW.md #9 / #42
+
+models:                               # pin revisions for reproducibility (REVIEW.md #43)
+  kokoro_revision: ""
+  whisper_revision: ""
+  ffmpeg_version: ""
+
+test_mode: true                       # REVIEW.md #32 — dry-run / unlisted until flipped

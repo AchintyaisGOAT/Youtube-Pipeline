@@ -1,0 +1,60 @@
+[project]
+name = "youtube-pipeline"
+version = "0.1.0"
+description = "Automated history/education YouTube video pipeline (long-form + Shorts)"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # config
+    "pydantic",
+    "pydantic-settings",
+    "pyyaml",
+    # data + queue
+    "sqlalchemy",
+    "alembic",
+    "psycopg[binary]",
+    "procrastinate",
+    # http + resilience
+    "httpx",
+    "hishel",
+    "tenacity",
+    "aiolimiter",
+    "loguru",
+    "apprise",
+    # storage abstraction
+    "fsspec",
+    # google / youtube
+    "google-genai",
+    "google-api-python-client",
+    "google-auth-oauthlib",
+    "google-auth-httplib2",
+    # discovery (best-effort)
+    "pytrends",
+    # local AI
+    "kokoro-onnx",
+    "soundfile",
+    "onnxruntime-gpu",
+    "faster-whisper",
+    "huggingface_hub",
+    # media
+    "pillow",
+    "pysubs2",
+    # review dashboard
+    "fastapi",
+    "uvicorn[standard]",
+    "jinja2",
+    "python-multipart",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
