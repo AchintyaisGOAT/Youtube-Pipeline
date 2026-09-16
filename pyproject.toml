@@ -9,27 +9,17 @@ dependencies = [
     "pydantic-settings",
     "pyyaml",
     "tzdata",              # Windows has no system zoneinfo database
-    # data + queue
+    # data (SQLite — single file, no server, no migrations)
     "sqlalchemy",
-    "alembic",
-    "psycopg[binary]",
-    "procrastinate",
     # http + resilience
     "httpx",
-    "hishel",
     "tenacity",
-    "aiolimiter",
     "loguru",
-    "apprise",
-    # storage abstraction
-    "fsspec",
     # google / youtube
     "google-genai",
     "google-api-python-client",
     "google-auth-oauthlib",
     "google-auth-httplib2",
-    # discovery (best-effort)
-    "pytrends",
     # local AI
     #   NOTE: faster-whisper pulls CPU onnxruntime for its VAD; kokoro-onnx[gpu]
     #   pulls onnxruntime-gpu. After `uv sync`, verify
@@ -42,11 +32,6 @@ dependencies = [
     # media
     "pillow",
     "pysubs2",
-    # review dashboard
-    "fastapi",
-    "uvicorn[standard]",
-    "jinja2",
-    "python-multipart",
 ]
 
 [dependency-groups]

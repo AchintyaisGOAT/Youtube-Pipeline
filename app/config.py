@@ -14,13 +14,18 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_SCHEMA_PATH = REPO_ROOT / "config.schema.json"
@@ -41,7 +46,7 @@ class Settings(BaseSettings):
     smithsonian_api_key: str = ""
     wikimedia_contact: str = "yt-pipeline (you@example.com)"
 
-    database_url: str = "postgresql+psycopg://ytpipe:CHANGE_ME@localhost:5432/ytpipe"
+    database_url: str = f"sqlite:///{(REPO_ROOT / 'data' / 'pipeline.db').as_posix()}"
 
     storage_base: str = str(REPO_ROOT / "data")
     assets_dir: str = str(REPO_ROOT / "assets")
@@ -242,3 +247,19 @@ def dump_config_schema(path: str | Path = CONFIG_SCHEMA_PATH) -> Path:
     p = Path(path)
     p.write_text(json.dumps(ChannelConfig.model_json_schema(), indent=2) + "\n", encoding="utf-8")
     return p
+
+
+def get_channel_config(session: Session, channel_id: uuid.UUID | None = None) -> ChannelConfig:
+    """Read channel behaviour config from the DB. Stage code must use this — never re-read
+    config.yaml directly (that file only feeds ``scripts/load_config.py``).
+    """
+    from sqlalchemy import select
+
+    from app.db import Channel  # deferred: app.db imports this module, so avoid a cycle
+
+    stmt = select(Channel)
+    stmt = stmt.filter_by(id=channel_id) if channel_id is not None else stmt.order_by(Channel.created_at)
+    channel = session.execute(stmt).scalars().first()
+    if channel is None:
+        raise RuntimeError("no channel configured — run scripts/load_config.py first")
+    return ChannelConfig.model_validate(channel.config)

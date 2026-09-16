@@ -1,7 +1,9 @@
 """Database: SQLAlchemy 2.0 models for every table in DESIGN.md section 5, plus
 ``llm_cache`` (DESIGN section 8.2), and a small sync engine/session helper.
 
-Status values are stored as plain strings — always assign ``Status`` members
+Single-file SQLite (see WORK_FOUNDATION.md §2) — no server, no Alembic; schema changes
+go through ``Base.metadata.create_all()`` at startup, which is additive-only. Status
+values are stored as plain strings — always assign ``Status`` members
 (``app.status.Status``), never bare strings.
 """
 
@@ -11,8 +13,10 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
+from pathlib import Path
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -24,9 +28,9 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     create_engine,
+    event,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -68,7 +72,7 @@ class Channel(Base, TimestampMixin):
     handle: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), default="")
     youtube_channel_id: Mapped[str | None] = mapped_column(String(64))
-    config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    config: Mapped[dict] = mapped_column(JSON, nullable=False)
     config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     videos: Mapped[list[Video]] = relationship(back_populates="channel")
@@ -90,7 +94,7 @@ class Candidate(Base, TimestampMixin):
     source: Mapped[str] = mapped_column(String(60), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     summary: Mapped[str | None] = mapped_column(Text)
-    raw: Mapped[dict | None] = mapped_column(JSONB)
+    raw: Mapped[dict | None] = mapped_column(JSON)
     score: Mapped[float | None] = mapped_column(Float)
     rationale: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default=Status.CANDIDATE_NEW)
@@ -117,8 +121,8 @@ class Video(Base, TimestampMixin):
     angle: Mapped[str | None] = mapped_column(String(400))
     script: Mapped[str | None] = mapped_column(Text)
     script_prompt_hash: Mapped[str | None] = mapped_column(String(64))
-    research: Mapped[dict | None] = mapped_column(JSONB)
-    video_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB)
+    research: Mapped[dict | None] = mapped_column(JSON)
+    video_metadata: Mapped[dict | None] = mapped_column("metadata", JSON)
     duration_s: Mapped[float | None] = mapped_column(Float)
     thumbnail_uri: Mapped[str | None] = mapped_column(String(1024))
     error: Mapped[str | None] = mapped_column(Text)
@@ -184,7 +188,7 @@ class Asset(Base):
     attribution: Mapped[str | None] = mapped_column(Text)
     uri: Mapped[str] = mapped_column(String(1024), nullable=False)
     sha256: Mapped[str | None] = mapped_column(String(64))
-    meta: Mapped[dict | None] = mapped_column(JSONB)
+    meta: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -209,7 +213,7 @@ class Render(Base):
     output_uri: Mapped[str | None] = mapped_column(String(1024))
     duration_s: Mapped[float | None] = mapped_column(Float)
     log: Mapped[str | None] = mapped_column(Text)
-    tool_versions: Mapped[dict | None] = mapped_column(JSONB)
+    tool_versions: Mapped[dict | None] = mapped_column(JSON)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
@@ -244,7 +248,7 @@ class AnalyticsSnapshot(Base):
     views: Mapped[int | None] = mapped_column(Integer)
     watch_time_minutes: Mapped[float | None] = mapped_column(Float)
     avg_view_duration_s: Mapped[float | None] = mapped_column(Float)
-    retention: Mapped[dict | None] = mapped_column(JSONB)
+    retention: Mapped[dict | None] = mapped_column(JSON)
 
 
 # --------------------------------------------------------------------------- #
@@ -283,7 +287,7 @@ class Heartbeat(Base):
 
     key: Mapped[str] = mapped_column(String(60), primary_key=True)
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    detail: Mapped[dict | None] = mapped_column(JSONB)
+    detail: Mapped[dict | None] = mapped_column(JSON)
 
 
 class LlmCache(Base):
@@ -291,7 +295,7 @@ class LlmCache(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(model+prompt+inputs)
     model: Mapped[str] = mapped_column(String(80), nullable=False)
-    response: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    response: Mapped[dict] = mapped_column(JSON, nullable=False)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     response_tokens: Mapped[int | None] = mapped_column(Integer)
     hits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -307,10 +311,22 @@ class LlmCache(Base):
 _engine: Engine | None = None
 
 
+@event.listens_for(Engine, "connect")
+def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+    """SQLite ignores FK constraints (our ondelete=CASCADE/SET NULL) unless told otherwise."""
+    if type(dbapi_connection).__module__.startswith("sqlite3"):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+
 def get_engine(url: str | None = None) -> Engine:
     global _engine
     if _engine is None or url is not None:
-        _engine = create_engine(url or get_settings().database_url, pool_pre_ping=True, future=True)
+        db_url = url or get_settings().database_url
+        if db_url.startswith("sqlite:///") and db_url != "sqlite:///:memory:":
+            Path(db_url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
+        _engine = create_engine(db_url, pool_pre_ping=True, future=True)
     return _engine
 
 
