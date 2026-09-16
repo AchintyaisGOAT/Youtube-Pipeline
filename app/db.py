@@ -79,10 +79,14 @@ class Channel(Base, TimestampMixin):
 # --------------------------------------------------------------------------- #
 class Candidate(Base, TimestampMixin):
     __tablename__ = "candidate"
-    __table_args__ = (UniqueConstraint("channel_id", "source", "title", name="uq_candidate_dedupe"),)
+    __table_args__ = (
+        UniqueConstraint("channel_id", "source", "title", name="uq_candidate_dedupe"),
+    )
 
     id: Mapped[uuid.UUID] = _pk()
-    channel_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("channel.id", ondelete="CASCADE"))
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("channel.id", ondelete="CASCADE"), index=True
+    )
     source: Mapped[str] = mapped_column(String(60), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     summary: Mapped[str | None] = mapped_column(Text)
@@ -101,9 +105,11 @@ class Video(Base, TimestampMixin):
     __tablename__ = "video"
 
     id: Mapped[uuid.UUID] = _pk()
-    channel_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("channel.id", ondelete="CASCADE"))
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("channel.id", ondelete="CASCADE"), index=True
+    )
     candidate_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("candidate.id", ondelete="SET NULL")
+        ForeignKey("candidate.id", ondelete="SET NULL"), index=True
     )
     status: Mapped[str] = mapped_column(String(40), nullable=False, default=Status.RESEARCHING)
 
@@ -191,8 +197,12 @@ class Render(Base):
     __tablename__ = "render"
 
     id: Mapped[uuid.UUID] = _pk()
-    video_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("video.id", ondelete="CASCADE"))
-    short_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("short.id", ondelete="CASCADE"))
+    video_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("video.id", ondelete="CASCADE"), index=True
+    )
+    short_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("short.id", ondelete="CASCADE"), index=True
+    )
     kind: Mapped[str] = mapped_column(String(16), nullable=False)  # longform | short | stage
     stage: Mapped[str | None] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -226,9 +236,7 @@ class Upload(Base, TimestampMixin):
 
 class AnalyticsSnapshot(Base):
     __tablename__ = "analytics_snapshot"
-    __table_args__ = (
-        UniqueConstraint("youtube_id", "captured_at", name="uq_analytics_snapshot"),
-    )
+    __table_args__ = (UniqueConstraint("youtube_id", "captured_at", name="uq_analytics_snapshot"),)
 
     id: Mapped[uuid.UUID] = _pk()
     youtube_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -257,7 +265,9 @@ class TopicPerformance(Base, TimestampMixin):
     __tablename__ = "topic_performance"
 
     id: Mapped[uuid.UUID] = _pk()
-    channel_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("channel.id", ondelete="CASCADE"))
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("channel.id", ondelete="CASCADE"), index=True
+    )
     topic_key: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     tag: Mapped[str | None] = mapped_column(String(80))
     length_bucket: Mapped[str | None] = mapped_column(String(20))
@@ -300,9 +310,7 @@ _engine: Engine | None = None
 def get_engine(url: str | None = None) -> Engine:
     global _engine
     if _engine is None or url is not None:
-        _engine = create_engine(
-            url or get_settings().database_url, pool_pre_ping=True, future=True
-        )
+        _engine = create_engine(url or get_settings().database_url, pool_pre_ping=True, future=True)
     return _engine
 
 

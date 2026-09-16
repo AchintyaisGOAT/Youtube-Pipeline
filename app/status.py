@@ -11,7 +11,7 @@ from enum import StrEnum
 class Status(StrEnum):
     # --- candidate lifecycle ---
     CANDIDATE_NEW = "candidate_new"
-    CANDIDATE_VETOED = "candidate_vetoed"          # auto_veto matched
+    CANDIDATE_VETOED = "candidate_vetoed"  # auto_veto matched
     CANDIDATE_MANUAL_REVIEW = "candidate_manual_review"
     CANDIDATE_APPROVED = "candidate_approved"
     CANDIDATE_REJECTED = "candidate_rejected"
@@ -48,6 +48,4 @@ TERMINAL: frozenset[Status] = frozenset(
 )
 
 #: States where a human must act before the pipeline can proceed.
-NEEDS_HUMAN: frozenset[Status] = frozenset(
-    {Status.CANDIDATE_MANUAL_REVIEW, Status.AWAITING_REVIEW}
-)
+NEEDS_HUMAN: frozenset[Status] = frozenset({Status.CANDIDATE_MANUAL_REVIEW, Status.AWAITING_REVIEW})
