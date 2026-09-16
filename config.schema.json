@@ -1,0 +1,528 @@
+{
+  "$defs": {
+    "Alignment": {
+      "additionalProperties": false,
+      "properties": {
+        "whisper_model": {
+          "default": "small.en",
+          "title": "Whisper Model",
+          "type": "string"
+        },
+        "mismatch_fallback_ratio": {
+          "default": 0.15,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Mismatch Fallback Ratio",
+          "type": "number"
+        }
+      },
+      "title": "Alignment",
+      "type": "object"
+    },
+    "ChannelInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "handle": {
+          "default": "",
+          "title": "Handle",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "audience": {
+          "default": "",
+          "title": "Audience",
+          "type": "string"
+        },
+        "tone": {
+          "default": "",
+          "title": "Tone",
+          "type": "string"
+        },
+        "language": {
+          "default": "en-US",
+          "title": "Language",
+          "type": "string"
+        }
+      },
+      "title": "ChannelInfo",
+      "type": "object"
+    },
+    "Discovery": {
+      "additionalProperties": false,
+      "properties": {
+        "primary": {
+          "default": "wikimedia_pageviews",
+          "title": "Primary",
+          "type": "string"
+        },
+        "also": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Also",
+          "type": "array"
+        },
+        "run": {
+          "default": "weekly Mon 06:00",
+          "title": "Run",
+          "type": "string"
+        },
+        "target_long_form_per_month": {
+          "default": 6,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Target Long Form Per Month",
+          "type": "integer"
+        }
+      },
+      "title": "Discovery",
+      "type": "object"
+    },
+    "Images": {
+      "additionalProperties": false,
+      "properties": {
+        "sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sources",
+          "type": "array"
+        },
+        "license_allow": {
+          "items": {
+            "type": "string"
+          },
+          "title": "License Allow",
+          "type": "array"
+        },
+        "per_video_max": {
+          "default": 180,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Per Video Max",
+          "type": "integer"
+        }
+      },
+      "title": "Images",
+      "type": "object"
+    },
+    "LongForm": {
+      "additionalProperties": false,
+      "properties": {
+        "target_seconds": {
+          "default": 420,
+          "maximum": 3600,
+          "minimum": 60,
+          "title": "Target Seconds",
+          "type": "integer"
+        },
+        "resolution": {
+          "default": [
+            1920,
+            1080
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Resolution",
+          "type": "array"
+        },
+        "fps": {
+          "default": 30,
+          "maximum": 60,
+          "minimum": 24,
+          "title": "Fps",
+          "type": "integer"
+        }
+      },
+      "title": "LongForm",
+      "type": "object"
+    },
+    "ModelPins": {
+      "additionalProperties": false,
+      "properties": {
+        "kokoro_revision": {
+          "default": "",
+          "title": "Kokoro Revision",
+          "type": "string"
+        },
+        "whisper_revision": {
+          "default": "",
+          "title": "Whisper Revision",
+          "type": "string"
+        },
+        "ffmpeg_version": {
+          "default": "",
+          "title": "Ffmpeg Version",
+          "type": "string"
+        }
+      },
+      "title": "ModelPins",
+      "type": "object"
+    },
+    "Ops": {
+      "additionalProperties": false,
+      "properties": {
+        "media_retention_days": {
+          "default": 30,
+          "maximum": 3650,
+          "minimum": 1,
+          "title": "Media Retention Days",
+          "type": "integer"
+        },
+        "delete_intermediates_on_success": {
+          "default": true,
+          "title": "Delete Intermediates On Success",
+          "type": "boolean"
+        },
+        "min_free_gb_before_render": {
+          "default": 15,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Min Free Gb Before Render",
+          "type": "integer"
+        },
+        "alert_on_budget_pct": {
+          "default": 80,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Alert On Budget Pct",
+          "type": "integer"
+        },
+        "backup_target": {
+          "default": "",
+          "title": "Backup Target",
+          "type": "string"
+        }
+      },
+      "title": "Ops",
+      "type": "object"
+    },
+    "Publish": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "default": "Education",
+          "title": "Category",
+          "type": "string"
+        },
+        "made_for_kids": {
+          "default": false,
+          "title": "Made For Kids",
+          "type": "boolean"
+        },
+        "synthetic_content_disclosure": {
+          "default": true,
+          "title": "Synthetic Content Disclosure",
+          "type": "boolean"
+        },
+        "api_visibility": {
+          "default": "private",
+          "title": "Api Visibility",
+          "type": "string"
+        },
+        "playlist_id": {
+          "default": "",
+          "title": "Playlist Id",
+          "type": "string"
+        },
+        "schedule": {
+          "$ref": "#/$defs/Schedule"
+        }
+      },
+      "title": "Publish",
+      "type": "object"
+    },
+    "Schedule": {
+      "additionalProperties": false,
+      "properties": {
+        "long_form": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Long Form",
+          "type": "array"
+        },
+        "shorts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Shorts",
+          "type": "array"
+        }
+      },
+      "title": "Schedule",
+      "type": "object"
+    },
+    "Shorts": {
+      "additionalProperties": false,
+      "properties": {
+        "per_long_form": {
+          "default": 7,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Per Long Form",
+          "type": "integer"
+        },
+        "max_seconds": {
+          "default": 55,
+          "maximum": 180,
+          "minimum": 5,
+          "title": "Max Seconds",
+          "type": "integer"
+        },
+        "resolution": {
+          "default": [
+            1080,
+            1920
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Resolution",
+          "type": "array"
+        },
+        "fps": {
+          "default": 30,
+          "maximum": 60,
+          "minimum": 24,
+          "title": "Fps",
+          "type": "integer"
+        }
+      },
+      "title": "Shorts",
+      "type": "object"
+    },
+    "Subtitles": {
+      "additionalProperties": false,
+      "properties": {
+        "font_file": {
+          "default": "assets/fonts/Inter-Regular.ttf",
+          "title": "Font File",
+          "type": "string"
+        },
+        "size": {
+          "default": 48,
+          "maximum": 200,
+          "minimum": 8,
+          "title": "Size",
+          "type": "integer"
+        },
+        "position": {
+          "default": "bottom-center",
+          "title": "Position",
+          "type": "string"
+        },
+        "max_lines": {
+          "default": 2,
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Max Lines",
+          "type": "integer"
+        },
+        "highlight_color": {
+          "default": "#FFD23F",
+          "title": "Highlight Color",
+          "type": "string"
+        },
+        "karaoke": {
+          "default": true,
+          "title": "Karaoke",
+          "type": "boolean"
+        },
+        "upload_sidecar_srt": {
+          "default": true,
+          "title": "Upload Sidecar Srt",
+          "type": "boolean"
+        }
+      },
+      "title": "Subtitles",
+      "type": "object"
+    },
+    "Topics": {
+      "additionalProperties": false,
+      "properties": {
+        "in_scope": {
+          "items": {
+            "type": "string"
+          },
+          "title": "In Scope",
+          "type": "array"
+        },
+        "auto_veto": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Auto Veto",
+          "type": "array"
+        },
+        "manual_review": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Manual Review",
+          "type": "array"
+        }
+      },
+      "title": "Topics",
+      "type": "object"
+    },
+    "Video": {
+      "additionalProperties": false,
+      "properties": {
+        "long_form": {
+          "$ref": "#/$defs/LongForm"
+        },
+        "shorts": {
+          "$ref": "#/$defs/Shorts"
+        },
+        "loudness_lufs": {
+          "default": -14.0,
+          "maximum": 0,
+          "title": "Loudness Lufs",
+          "type": "number"
+        },
+        "music_bed_lufs": {
+          "default": -18.0,
+          "maximum": 0,
+          "title": "Music Bed Lufs",
+          "type": "number"
+        },
+        "image_seconds_min": {
+          "default": 2.5,
+          "exclusiveMinimum": 0,
+          "title": "Image Seconds Min",
+          "type": "number"
+        },
+        "image_seconds_max": {
+          "default": 3.5,
+          "exclusiveMinimum": 0,
+          "title": "Image Seconds Max",
+          "type": "number"
+        },
+        "encoder": {
+          "default": "auto",
+          "title": "Encoder",
+          "type": "string"
+        },
+        "render_concurrency": {
+          "default": 1,
+          "maximum": 8,
+          "minimum": 1,
+          "title": "Render Concurrency",
+          "type": "integer"
+        }
+      },
+      "title": "Video",
+      "type": "object"
+    },
+    "Voice": {
+      "additionalProperties": false,
+      "properties": {
+        "primary": {
+          "default": "bm_george",
+          "title": "Primary",
+          "type": "string"
+        },
+        "secondary_for_quotes": {
+          "default": "",
+          "title": "Secondary For Quotes",
+          "type": "string"
+        },
+        "words_per_second": {
+          "default": 2.6,
+          "exclusiveMaximum": 6,
+          "exclusiveMinimum": 0.5,
+          "title": "Words Per Second",
+          "type": "number"
+        },
+        "paragraph_pause_ms": {
+          "default": 400,
+          "maximum": 3000,
+          "minimum": 0,
+          "title": "Paragraph Pause Ms",
+          "type": "integer"
+        }
+      },
+      "title": "Voice",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "config_version": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Config Version",
+      "type": "integer"
+    },
+    "timezone": {
+      "default": "America/New_York",
+      "title": "Timezone",
+      "type": "string"
+    },
+    "channel": {
+      "$ref": "#/$defs/ChannelInfo"
+    },
+    "topics": {
+      "$ref": "#/$defs/Topics"
+    },
+    "discovery": {
+      "$ref": "#/$defs/Discovery"
+    },
+    "video": {
+      "$ref": "#/$defs/Video"
+    },
+    "voice": {
+      "$ref": "#/$defs/Voice"
+    },
+    "subtitles": {
+      "$ref": "#/$defs/Subtitles"
+    },
+    "alignment": {
+      "$ref": "#/$defs/Alignment"
+    },
+    "images": {
+      "$ref": "#/$defs/Images"
+    },
+    "publish": {
+      "$ref": "#/$defs/Publish"
+    },
+    "ops": {
+      "$ref": "#/$defs/Ops"
+    },
+    "models": {
+      "$ref": "#/$defs/ModelPins"
+    },
+    "test_mode": {
+      "default": true,
+      "title": "Test Mode",
+      "type": "boolean"
+    }
+  },
+  "title": "ChannelConfig",
+  "type": "object"
+}
