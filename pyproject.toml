@@ -21,11 +21,17 @@ dependencies = [
     "google-auth-oauthlib",
     "google-auth-httplib2",
     # local AI
-    #   NOTE: faster-whisper pulls CPU onnxruntime for its VAD; kokoro-onnx[gpu]
-    #   pulls onnxruntime-gpu. After `uv sync`, verify
+    #   NOTE: faster-whisper pulls CPU onnxruntime for its VAD; kokoro-onnx[gpu] is
+    #   *supposed* to pull onnxruntime-gpu but its marker checks
+    #   platform_machine == 'x86_64', which is never true on Windows (reports 'AMD64') —
+    #   so it silently never installs there. Declared explicitly below to work around
+    #   that. After `uv sync`, verify
     #   `python -c "import onnxruntime as o; print(o.get_available_providers())"`
-    #   lists CUDAExecutionProvider; if not, `uv pip uninstall onnxruntime` (keep -gpu).
+    #   lists CUDAExecutionProvider; if not, `uv pip uninstall onnxruntime` (keep -gpu) —
+    #   both packages install into the same `onnxruntime` import path, so whichever
+    #   lands on disk last wins.
     "kokoro-onnx[gpu]",
+    "onnxruntime-gpu; platform_system == 'Windows'",
     "soundfile",
     "faster-whisper",
     "huggingface-hub",
