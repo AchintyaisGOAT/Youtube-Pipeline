@@ -36,8 +36,8 @@ topics:
     - "still-actively-disputed historical framing"
 
 discovery:
-  primary: "wikimedia_pageviews"   # DESIGN.md #26
-  also: ["on_this_day", "reddit_history", "pytrends"]  # pytrends best-effort
+  primary: "wikimedia_pageviews"   # DESIGN.md #26 — the only signal discover.py implements right now
+  also: []                        # reserved for on_this_day/reddit/pytrends if added later; not implemented yet
   run: "weekly Mon 06:00"          # DESIGN.md eff#7 — discovery is weekly; a daily tick advances queued work
   target_long_form_per_month: 6
 
@@ -78,8 +78,8 @@ alignment:
   mismatch_fallback_ratio: 0.15    # DESIGN.md #14
 
 images:
-  sources: ["wikimedia", "loc", "met", "smithsonian"]  # smithsonian optional
-  license_allow: ["public-domain-us", "cc0"]           # DESIGN.md #4
+  sources: ["wikimedia", "loc"]              # Met/Smithsonian dropped for now (WORK_CONTENT.md §2)
+  license_allow: ["public-domain-us", "cc0"] # DESIGN.md #4
   per_video_max: 180
 
 publish:
