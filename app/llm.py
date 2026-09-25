@@ -19,7 +19,14 @@ from app.config import get_settings
 from app.db import LlmCache
 from app.quota import check_and_increment
 
-MODEL = "gemini-2.5-flash"
+#   gemini-2.5-flash (DESIGN.md's original pick) returns 404 "no longer available to
+#   new users" as of 2026-09 -- verified live against a real key. Using the "latest"
+#   alias instead of a dated model id so this doesn't go stale the same way again;
+#   confirmed live that it currently resolves to a real, working flash-tier model
+#   (plain + JSON-mode calls succeeded; Search grounding request shape was confirmed
+#   correct too -- a 429 from its separate, tighter free quota during rapid testing,
+#   not a code error). If this ever 404s, re-check `client.models.list()`.
+MODEL = "gemini-flash-latest"
 
 _client = None
 
@@ -41,6 +48,25 @@ def _cache_key(model: str, prompt: str, inputs: dict) -> str:
 def _estimate_tokens(prompt: str) -> int:
     """~4 chars/token is a rough-enough heuristic for pre-flight budget checks."""
     return max(1, len(prompt) // 4)
+
+
+def _generate_with_retry(model: str, prompt: str, config):
+    """A 503 ("high demand") is genuinely transient per Google's own error message —
+    confirmed live that a freshly-launched flash model can 503 repeatedly for minutes
+    at a time under load, so give it real backoff room rather than the SDK's own brief
+    internal retry. A 404/400/permission error is not transient and should fail fast,
+    which `retry_if_exception_type` already ensures by not matching those."""
+    from google.genai import errors as genai_errors
+    from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+    for attempt in Retrying(
+        retry=retry_if_exception_type(genai_errors.ServerError),
+        wait=wait_exponential(multiplier=3, min=5, max=60),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    ):
+        with attempt:
+            return _client_instance().models.generate_content(model=model, contents=prompt, config=config)
 
 
 def generate(
@@ -73,7 +99,7 @@ def generate(
         tools=[types.Tool(google_search=types.GoogleSearch())] if grounding else None,
         response_mime_type="application/json" if json_mode else "text/plain",
     )
-    response = _client_instance().models.generate_content(model=model, contents=prompt, config=config)
+    response = _generate_with_retry(model, prompt, config)
 
     parsed: dict = json.loads(response.text) if json_mode else {"text": response.text}
     usage = getattr(response, "usage_metadata", None)
