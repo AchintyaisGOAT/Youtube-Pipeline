@@ -75,10 +75,15 @@ def pick_encoder() -> str:
 
 
 def video_codec_args(config: ChannelConfig) -> list[str]:
+    """`-pix_fmt yuv420p` is not optional here. Verified live: without it, libx264
+    just inherits whatever chroma subsampling the source JPEGs decode to -- one
+    real render came out `yuvj422p` / High 4:2:2 Profile, which played in ffprobe
+    fine but wouldn't open in Windows' own video player. 4:2:0 is what every consumer
+    player (and YouTube's own upload spec) actually expects."""
     encoder = pick_encoder() if config.video.encoder == "auto" else config.video.encoder
     if encoder == "h264_nvenc":
-        return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "23"]
-    return ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "23", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p"]
 
 
 def drawtext_font_file() -> str:
