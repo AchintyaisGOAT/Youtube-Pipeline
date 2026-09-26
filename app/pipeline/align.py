@@ -15,7 +15,7 @@ import re
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import get_channel_config
@@ -111,6 +111,14 @@ def _proportional_timing(segments: list[Segment], duration_s: float) -> None:
 
 
 def _create_shorts(session: Session, video_id: uuid.UUID, segments: list[Segment]) -> None:
+    """Idempotent: a stage must be safe to re-run (WORK_MEDIA.md §5) -- verified live
+    that re-running align.py on a video that already has Short rows (e.g. re-processing
+    after an upstream fix, same as any other retry) hit a UNIQUE constraint on
+    (video_id, idx) trying to insert a second set alongside the first. Delete-then-
+    recreate rather than skip-if-exists, since re-alignment can legitimately produce
+    different timings than the previous pass."""
+    session.execute(delete(Short).where(Short.video_id == video_id))
+
     run_start: float | None = None
     run_end: float | None = None
     idx = 0
