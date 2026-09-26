@@ -90,23 +90,14 @@
     "Images": {
       "additionalProperties": false,
       "properties": {
-        "sources": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Sources",
-          "type": "array"
-        },
-        "license_allow": {
-          "items": {
-            "type": "string"
-          },
-          "title": "License Allow",
-          "type": "array"
+        "art_style": {
+          "default": "Flat 2D cartoon illustration, bold clean outlines, vibrant saturated colors, simple shapes, fun educational animated-explainer style, 16:9 widescreen.",
+          "title": "Art Style",
+          "type": "string"
         },
         "per_video_max": {
-          "default": 180,
-          "maximum": 1000,
+          "default": 60,
+          "maximum": 500,
           "minimum": 1,
           "title": "Per Video Max",
           "type": "integer"
@@ -118,11 +109,18 @@
     "LongForm": {
       "additionalProperties": false,
       "properties": {
-        "target_seconds": {
-          "default": 420,
+        "target_seconds_min": {
+          "default": 180,
           "maximum": 3600,
           "minimum": 60,
-          "title": "Target Seconds",
+          "title": "Target Seconds Min",
+          "type": "integer"
+        },
+        "target_seconds_max": {
+          "default": 480,
+          "maximum": 3600,
+          "minimum": 60,
+          "title": "Target Seconds Max",
           "type": "integer"
         },
         "resolution": {

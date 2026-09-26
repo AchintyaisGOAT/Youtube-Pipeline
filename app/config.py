@@ -93,9 +93,18 @@ class Discovery(_Model):
 
 
 class LongForm(_Model):
-    target_seconds: int = Field(420, ge=60, le=3600)
+    #: A range, not a fixed length -- script.py aims within it based on how much the
+    #: topic naturally supports, rather than padding/cutting every video to one length.
+    target_seconds_min: int = Field(180, ge=60, le=3600)
+    target_seconds_max: int = Field(480, ge=60, le=3600)
     resolution: tuple[int, int] = (1920, 1080)
     fps: int = Field(30, ge=24, le=60)
+
+    @model_validator(mode="after")
+    def _range_order(self) -> LongForm:
+        if self.target_seconds_min > self.target_seconds_max:
+            raise ValueError("target_seconds_min must be <= target_seconds_max")
+        return self
 
 
 class Shorts(_Model):
@@ -168,9 +177,14 @@ class Alignment(_Model):
 
 
 class Images(_Model):
-    sources: list[str] = Field(default_factory=lambda: ["wikimedia", "loc", "met", "smithsonian"])
-    license_allow: list[str] = Field(default_factory=lambda: ["public-domain-us", "cc0"])
-    per_video_max: int = Field(180, ge=1, le=1000)
+    #: Segment visuals are AI-generated illustrations (Gemini image models), not
+    #: archival-photo search -- this string is prepended to every generation prompt,
+    #: so it's what keeps a whole video's illustrations visually consistent.
+    art_style: str = (
+        "Flat 2D cartoon illustration, bold clean outlines, vibrant saturated colors, "
+        "simple shapes, fun educational animated-explainer style, 16:9 widescreen."
+    )
+    per_video_max: int = Field(60, ge=1, le=500)
 
 
 class Schedule(_Model):

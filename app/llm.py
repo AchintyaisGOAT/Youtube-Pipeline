@@ -88,6 +88,27 @@ def _generate_with_retry(model: str, prompt: str, config):
             return _client_instance().models.generate_content(model=model, contents=prompt, config=config)
 
 
+#: Verified live: returns a single response part with `inline_data` set directly (no
+#: special config needed) -- an actual generated image, not a description of one.
+IMAGE_MODEL = "gemini-3.1-flash-image"
+
+
+def generate_image(session: Session, prompt: str) -> tuple[bytes, str]:
+    """Quota-checked Gemini image generation. Returns (image_bytes, mime_type).
+
+    Unlike `generate()`, results aren't stored in `llm_cache` (that table's `response`
+    column is JSON, not raw bytes) -- callers own their on-disk caching/dedup (see
+    app/pipeline/images.py, which dedups by a hash of the prompt via the `asset` table,
+    same as it always deduped downloaded photos by source id).
+    """
+    check_and_increment(session, "gemini", tokens=_estimate_tokens(prompt))
+    response = _generate_with_retry(IMAGE_MODEL, prompt, None)
+    part = response.candidates[0].content.parts[0]
+    if part.inline_data is None:
+        raise ValueError("Gemini image generation returned no image data")
+    return part.inline_data.data, part.inline_data.mime_type
+
+
 def generate(
     session: Session,
     prompt: str,

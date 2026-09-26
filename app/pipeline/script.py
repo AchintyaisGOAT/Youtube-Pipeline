@@ -29,7 +29,8 @@ def run(session: Session, video_id: uuid.UUID) -> None:
     prompt = PROMPT_PATH.read_text(encoding="utf-8").format(
         topic=video.title,
         research_json=json.dumps(video.research or {}, indent=2),
-        target_seconds=config.video.long_form.target_seconds,
+        target_seconds_min=config.video.long_form.target_seconds_min,
+        target_seconds_max=config.video.long_form.target_seconds_max,
         words_per_second=config.voice.words_per_second,
         tone=config.channel.tone,
         shorts_count=config.video.shorts.per_long_form,

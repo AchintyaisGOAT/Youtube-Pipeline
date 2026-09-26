@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.config import ChannelConfig, load_channel_config
-from app.db import Base, Candidate, Channel, Video, get_engine, get_sessionmaker
+from app.db import Asset, Base, Candidate, Channel, Segment, Video, get_engine, get_sessionmaker
 from app.pipeline import gate, images, rank, script, segment
 from app.status import Status
 
@@ -229,34 +231,49 @@ def test_script_accepts_output_with_short_spans(session_factory, channel, monkey
 
 
 # --------------------------------------------------------------------------- #
-# images.py — license filtering, pure functions (no network)
+# images.py — AI-generated illustrations, no live Gemini call needed
 # --------------------------------------------------------------------------- #
-def test_commons_license_accepts_public_domain():
-    page = {
-        "pageid": 1,
-        "title": "File:Test.jpg",
-        "imageinfo": [
-            {
-                "url": "https://example.org/test.jpg",
-                "descriptionurl": "https://commons.wikimedia.org/wiki/File:Test.jpg",
-                "extmetadata": {
-                    "LicenseShortName": {"value": "Public domain"},
-                    "LicenseUrl": {"value": "https://example.org/pd"},
-                },
-            }
-        ],
-    }
-    result = images._commons_license(page)
-    assert result == ("Public domain", "https://example.org/pd")
+def test_prompt_hash_is_deterministic_and_sensitive_to_content():
+    a = images._prompt_hash("draw a cat")
+    b = images._prompt_hash("draw a cat")
+    c = images._prompt_hash("draw a dog")
+    assert a == b
+    assert a != c
 
 
-def test_commons_license_rejects_cc_by():
-    page = {
-        "imageinfo": [{"extmetadata": {"LicenseShortName": {"value": "CC BY-SA 4.0"}}}],
-    }
-    assert images._commons_license(page) is None
+def test_images_run_generates_and_dedups_by_prompt(session_factory, channel, monkeypatch):
+    calls = []
 
+    def fake_generate_image(session, prompt):
+        calls.append(prompt)
+        return b"fake-jpeg-bytes", "image/jpeg"
 
-def test_loc_license_requires_explicit_rights_statement():
-    assert images._loc_license({"rights": "No known restrictions on publication."}) is not None
-    assert images._loc_license({"rights": "Rights not evaluated."}) is None
+    monkeypatch.setattr(images.llm, "generate_image", fake_generate_image)
+
+    with session_factory() as session:
+        video = Video(channel_id=channel, status=Status.FETCHING_IMAGES)
+        session.add(video)
+        session.commit()
+
+        # two segments with IDENTICAL text -> identical prompt -> only one generation call
+        session.add_all(
+            [
+                Segment(video_id=video.id, idx=0, text="Rome burns.", in_short_span=False),
+                Segment(video_id=video.id, idx=1, text="Rome burns.", in_short_span=False),
+            ]
+        )
+        session.commit()
+
+        images.run(session, video.id)
+        session.commit()
+
+        assert len(calls) == 1  # deduped by prompt hash, not re-generated per segment
+        assert video.status == Status.SYNTHESIZING_VOICE
+
+        segs = session.query(Segment).order_by(Segment.idx).all()
+        assert segs[0].image_asset_id == segs[1].image_asset_id  # same asset, reused
+
+        asset = session.get(Asset, segs[0].image_asset_id)
+        assert asset.source == "gemini"
+        assert asset.license == "ai-generated"
+        assert Path(asset.uri).exists()

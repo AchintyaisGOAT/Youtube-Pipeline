@@ -13,8 +13,11 @@ channel:
   name: ""
   handle: ""
   description: ""
-  audience: "curious adults who like well-sourced history"
-  tone: "authoritative, accessible, dry wit, never clickbait"
+  audience: "curious people who want to be entertained, not lectured at"
+  # Animated/illustrated entertainment channel, not a narrated documentary -- direct
+  # product feedback on an early real render (dry narration over still photos read as
+  # "sluggish"). See images.art_style below for the matching visual direction.
+  tone: "energetic, fun, fast-paced, a little cheeky -- like a friend telling you the wildest true story they know, never a dry lecture; still accurate and well-sourced"
   language: "en-US"
 
 topics:
@@ -43,7 +46,8 @@ discovery:
 
 video:
   long_form:
-    target_seconds: 420
+    target_seconds_min: 180  # 3 min -- script.py fits length to the story, not the reverse
+    target_seconds_max: 480  # 8 min
     resolution: [1920, 1080]
     fps: 30
   shorts:
@@ -78,9 +82,11 @@ alignment:
   mismatch_fallback_ratio: 0.15    # DESIGN.md #14
 
 images:
-  sources: ["wikimedia", "loc"]              # Met/Smithsonian dropped for now (WORK_CONTENT.md §2)
-  license_allow: ["public-domain-us", "cc0"] # DESIGN.md #4
-  per_video_max: 180
+  # Segment visuals are AI-generated illustrations (Gemini image models), not archival-
+  # photo search -- prepended to every generation prompt, so this is what keeps a whole
+  # video's illustrations visually consistent. Edit freely per channel's desired look.
+  art_style: "Flat 2D cartoon illustration, bold clean outlines, vibrant saturated colors, simple shapes, fun educational animated-explainer style, 16:9 widescreen."
+  per_video_max: 60
 
 publish:
   category: "Education"

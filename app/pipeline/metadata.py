@@ -20,6 +20,10 @@ PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "metad
 
 
 def _sources_block(session: Session, video_id: uuid.UUID) -> str:
+    """AI-generated illustrations (source="gemini") don't have a real license/rights
+    URL to credit -- there's nothing owed, just a disclosure line. Any other source
+    (e.g. a future archival-photo integration) still gets full attribution: that's a
+    real legal requirement PD/CC0 terms impose (DESIGN.md #4/#45), not optional."""
     asset_ids = set(
         session.execute(
             select(Segment.image_asset_id).filter_by(video_id=video_id).where(Segment.image_asset_id.is_not(None))
@@ -28,7 +32,13 @@ def _sources_block(session: Session, video_id: uuid.UUID) -> str:
     if not asset_ids:
         return ""
     assets = session.execute(select(Asset).filter(Asset.id.in_(asset_ids))).scalars().all()
-    lines = [f"- {a.attribution or a.source_id} ({a.source}, {a.license}) — {a.rights_url}" for a in assets]
+    if all(a.source == "gemini" for a in assets):
+        return "Illustrations in this video are AI-generated."
+    lines = [
+        f"- {a.attribution or a.source_id} ({a.source}, {a.license}) — {a.rights_url}"
+        for a in assets
+        if a.source != "gemini"
+    ]
     return "Image sources:\n" + "\n".join(lines)
 
 
