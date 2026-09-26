@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.config import ChannelConfig, get_channel_config, get_settings
 from app.db import Asset, Render, Segment, Video
-from app.pipeline._ffmpeg import ffmpeg_escape_path, pick_encoder, probe, run_ffmpeg, video_codec_args
+from app.pipeline._ffmpeg import pick_encoder, probe, run_ffmpeg, video_codec_args
 from app.pipeline._subtitles import build_subtitles
 from app.status import Status
 from app.storage import atomic_write_text, output_dir, work_dir
@@ -77,10 +77,18 @@ def _build_slideshow(
             f"zoompan=z='{zoom_expr}':d={num_frames}:s={resolution[0]}x{resolution[1]}:fps={fps},"
             "setsar=1"
         )
+        # `-t` must be an OUTPUT option here, not an input one. zoompan's `d` multiplies
+        # *each* input frame into `d` output frames -- it isn't a total-frame count. A
+        # looped still image defaults to 25fps on the input side, so `-t {duration}`
+        # placed before `-i` (limiting input read time) combined with `d` sized for the
+        # *output* fps produced duration**2 * 25 seconds of output (verified live: a 3s
+        # segment came out 225s long). Putting `-t` after the filter instead just
+        # truncates the output stream at the intended length, independent of whatever
+        # zoompan's internal multiplier is doing.
         run_ffmpeg(
             [
-                "-loop", "1", "-t", f"{duration:.3f}", "-i", str(image_path),
-                "-vf", vf, "-r", str(fps), *codec_args, "-an",
+                "-loop", "1", "-i", str(image_path),
+                "-vf", vf, "-r", str(fps), "-t", f"{duration:.3f}", *codec_args, "-an",
                 str(clip_path),
             ]
         )
@@ -140,14 +148,24 @@ def _add_ducked_music(video_path: Path, music_path: Path, config: ChannelConfig,
 
 
 def _burn_subtitles(video_path: Path, ass_path: Path, config: ChannelConfig, out_path: Path) -> None:
+    """Windows absolute paths (the `C:` drive letter) don't survive being embedded in
+    an `ass=filename=...` filtergraph option value -- verified live that neither
+    backslash-escaping nor single-quoting the colon was reliably honored by this
+    ffmpeg build's filter-option parser, which kept mis-splitting on it. Sidestepping
+    entirely: run ffmpeg with its cwd set to the subtitle file's own directory and
+    reference it by bare filename, so there's no colon (or any special character) in
+    the filter string at all. `video_path`/`out_path` stay absolute, which is
+    unaffected by cwd.
+    """
     codec_args = video_codec_args(config)
     run_ffmpeg(
         [
             "-i", str(video_path),
-            "-vf", f"ass={ffmpeg_escape_path(ass_path)}",
+            "-vf", f"ass=filename={ass_path.name}",
             *codec_args, "-c:a", "copy",
             str(out_path),
-        ]
+        ],
+        cwd=ass_path.parent,
     )
     probe(out_path)
 

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.config import ChannelConfig, get_channel_config
 from app.db import Render, Segment, Short, Video
-from app.pipeline._ffmpeg import probe, run_ffmpeg, video_codec_args
+from app.pipeline._ffmpeg import drawtext_font_file, probe, run_ffmpeg, video_codec_args
 from app.status import Status
 from app.storage import output_dir
 
@@ -44,11 +44,16 @@ def _crop_and_caption(
 ) -> None:
     resolution = config.video.shorts.resolution
     codec_args = video_codec_args(config)
+    # `fontfile=` needs a bare filename, not an absolute path -- a Windows drive-letter
+    # colon inside a filtergraph option value isn't reliably parsed by this ffmpeg
+    # build (see assemble.py's _burn_subtitles for the same issue with `ass=filename=`).
+    # Running with cwd set to the font's own directory sidesteps it the same way.
+    font_path = Path(drawtext_font_file())
     vf = (
         f"crop=ih*{resolution[0]}/{resolution[1]}:ih,"
         f"scale={resolution[0]}:{resolution[1]},"
-        f"drawtext=text='{_escape_drawtext(caption)}':fontcolor=white:fontsize=48:"
-        "borderw=3:bordercolor=black:x=(w-text_w)/2:y=h*0.08"
+        f"drawtext=text='{_escape_drawtext(caption)}':fontfile={font_path.name}:"
+        "fontcolor=white:fontsize=48:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h*0.08"
     )
     run_ffmpeg(
         [
@@ -56,7 +61,8 @@ def _crop_and_caption(
             "-vf", vf, "-r", str(config.video.shorts.fps), *codec_args,
             "-c:a", "aac", "-b:a", "192k",
             str(out_path),
-        ]
+        ],
+        cwd=font_path.parent,
     )
     probe(out_path)
 
