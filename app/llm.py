@@ -93,8 +93,27 @@ def _generate_with_retry(model: str, prompt: str, config):
 IMAGE_MODEL = "gemini-3.1-flash-image"
 
 
-def generate_image(session: Session, prompt: str) -> tuple[bytes, str]:
+def _extract_image(response) -> tuple[bytes, str] | None:
+    content = response.candidates[0].content if response.candidates else None
+    parts = content.parts if content else None
+    if not parts:
+        return None
+    for part in parts:
+        if part.inline_data is not None:
+            return part.inline_data.data, part.inline_data.mime_type
+    return None
+
+
+def generate_image(session: Session, prompt: str, *, attempts: int = 4) -> tuple[bytes, str]:
     """Quota-checked Gemini image generation. Returns (image_bytes, mime_type).
+
+    Verified live that this model does not reliably return an image every call for the
+    identical prompt -- observed an empty response (zero parts) and a text-only
+    response (a written description of an image it did not actually attach, and for an
+    unrelated subject) from three back-to-back calls with the same prompt and config.
+    Vague, non-visual segment text ("We all know the rhyme.") triggers this far more
+    than a concrete scene description. Retries a few times before giving up, since a
+    repeat call on the identical prompt often succeeds where the last one did not.
 
     Unlike `generate()`, results aren't stored in `llm_cache` (that table's `response`
     column is JSON, not raw bytes) -- callers own their on-disk caching/dedup (see
@@ -102,11 +121,12 @@ def generate_image(session: Session, prompt: str) -> tuple[bytes, str]:
     same as it always deduped downloaded photos by source id).
     """
     check_and_increment(session, "gemini", tokens=_estimate_tokens(prompt))
-    response = _generate_with_retry(IMAGE_MODEL, prompt, None)
-    part = response.candidates[0].content.parts[0]
-    if part.inline_data is None:
-        raise ValueError("Gemini image generation returned no image data")
-    return part.inline_data.data, part.inline_data.mime_type
+    for _ in range(attempts):
+        response = _generate_with_retry(IMAGE_MODEL, prompt, None)
+        image = _extract_image(response)
+        if image is not None:
+            return image
+    raise ValueError(f"Gemini returned no image after {attempts} attempts for prompt: {prompt[:200]!r}")
 
 
 def generate(

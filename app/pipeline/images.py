@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -45,7 +46,15 @@ def run(session: Session, video_id: uuid.UUID) -> None:
             select(Asset).filter_by(source="gemini", source_id=source_id)
         ).scalar_one_or_none()
         if asset is None:
-            image_bytes, mime_type = llm.generate_image(session, prompt)
+            try:
+                image_bytes, mime_type = llm.generate_image(session, prompt)
+            except ValueError as exc:
+                # generate_image() already retries internally -- this means it's
+                # genuinely exhausted, not a one-off. One un-illustratable segment
+                # (assemble.py forward-fills from the last successful image) must not
+                # take down the whole video.
+                logger.warning("illustration generation failed for segment {}: {}", segment.idx, exc)
+                continue
             ext = "jpg" if "jpeg" in mime_type else "png"
             local_path = cache_dir() / "illustrations" / f"{source_id}.{ext}"
             local_path.parent.mkdir(parents=True, exist_ok=True)
