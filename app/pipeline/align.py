@@ -24,31 +24,58 @@ from app.status import Status
 from app.storage import work_dir
 
 _model = None
+_model_is_cuda = False
 _WORD = re.compile(r"[A-Za-z0-9']+")
 
 
-def _model_instance(model_name: str):
-    global _model
-    if _model is None:
-        from faster_whisper import WhisperModel
+def _load_model(model_name: str, device: str, compute_type: str):
+    from faster_whisper import WhisperModel
 
+    return WhisperModel(model_name, device=device, compute_type=compute_type)
+
+
+def _ensure_model(model_name: str) -> None:
+    global _model, _model_is_cuda
+    if _model is None:
         try:
-            _model = WhisperModel(model_name, device="cuda", compute_type="float16")
+            _model = _load_model(model_name, "cuda", "float16")
+            _model_is_cuda = True
         except Exception:
-            _model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    return _model
+            _model = _load_model(model_name, "cpu", "int8")
+            _model_is_cuda = False
 
 
 def _words(text: str) -> list[str]:
     return _WORD.findall(text.lower())
 
 
-def _transcribe_words(audio_path: Path, prompt: str, model_name: str) -> list[tuple[float, float]]:
-    """Flat (start, end) per recognized word, in order."""
-    model = _model_instance(model_name)
+def _run_transcribe(model, audio_path: Path, prompt: str) -> list:
     segments, _info = model.transcribe(
         str(audio_path), word_timestamps=True, initial_prompt=prompt[:800], language="en"
     )
+    return list(segments)  # force the generator now so a lazy CUDA error surfaces here, not later
+
+
+def _transcribe_words(audio_path: Path, prompt: str, model_name: str) -> list[tuple[float, float]]:
+    """Flat (start, end) per recognized word, in order.
+
+    CTranslate2 apparently loads its CUDA runtime libraries lazily on first actual
+    inference, not at WhisperModel construction -- verified live that a `device="cuda"`
+    model constructs successfully on a machine missing cublas64_12.dll, then fails only
+    once `.transcribe()` is actually iterated. Constructing on CUDA is therefore not
+    proof CUDA works; only a real transcribe call is. Falls back to a fresh CPU model
+    and retries once if the CUDA path fails here."""
+    global _model, _model_is_cuda
+    _ensure_model(model_name)
+    try:
+        segments = _run_transcribe(_model, audio_path, prompt)
+    except Exception:
+        if not _model_is_cuda:
+            raise
+        _model = _load_model(model_name, "cpu", "int8")
+        _model_is_cuda = False
+        segments = _run_transcribe(_model, audio_path, prompt)
+
     out: list[tuple[float, float]] = []
     for seg in segments:
         for word in seg.words or []:
