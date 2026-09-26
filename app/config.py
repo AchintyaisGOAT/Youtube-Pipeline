@@ -44,7 +44,9 @@ class Settings(BaseSettings):
     youtube_refresh_token: str = ""
     youtube_channel_id: str = ""
     smithsonian_api_key: str = ""
-    wikimedia_contact: str = "yt-pipeline (you@example.com)"
+    #: Must be a URL, not an email — Wikimedia's bot policy (tightened 2026-09-23)
+    #: 403s any upload.wikimedia.org request whose User-Agent contact isn't a URL.
+    wikimedia_contact: str = "https://example.org/"
 
     database_url: str = f"sqlite:///{(REPO_ROOT / 'data' / 'pipeline.db').as_posix()}"
 
