@@ -21,12 +21,27 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 #: A run of capitalized words — a decent proxy for "the name/place/event this sentence
 #: is about", which makes a much better image-search query than the full sentence.
 _PROPER_NOUN_RUN = re.compile(r"(?:[A-Z][a-zA-Z'.-]*\s*){1,4}")
+#: Common sentence-initial words that end up capitalized without being a real proper
+#: noun (verified live: "The weapon was likely..." produced the query "The", which
+#: matched a random church photo on Wikimedia Commons).
+_SENTENCE_INITIAL_STOPWORDS = {
+    "the", "a", "an", "it", "this", "that", "these", "those", "while", "instead",
+    "however", "although", "when", "where", "who", "what", "why", "how", "but",
+    "and", "yet", "so", "if", "then", "there", "here", "some", "many", "most",
+    "few", "each", "every",
+}
 
 
 def _image_query(sentence: str) -> str:
     candidates = [m.strip() for m in _PROPER_NOUN_RUN.findall(sentence) if len(m.strip()) > 2]
-    if candidates:
-        return max(candidates, key=len)
+    # A multi-word run ("Andrew Borden") is almost always a real name/place; a lone
+    # capitalized word is just as likely to be sentence-initial capitalization.
+    multi_word = [c for c in candidates if " " in c]
+    if multi_word:
+        return max(multi_word, key=len)
+    single_word = [c for c in candidates if c.lower() not in _SENTENCE_INITIAL_STOPWORDS]
+    if single_word:
+        return max(single_word, key=len)
     return sentence[:120]
 
 

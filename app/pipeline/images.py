@@ -9,6 +9,8 @@ what to do with an image-less segment.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from loguru import logger
@@ -19,6 +21,7 @@ from app.config import get_channel_config
 from app.db import Asset, Segment, Video
 from app.http import get_http_client, http_retry
 from app.status import Status
+from app.storage import atomic_write_bytes, cache_dir
 
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 LOC_API = "https://www.loc.gov/search/"
@@ -125,6 +128,25 @@ def _find_image(query: str, sources: list[str]) -> dict | None:
     return None
 
 
+@http_retry
+def _download_image(remote_uri: str, source: str, source_id: str) -> str:
+    """Media reads `asset.uri` as a local file path, never a remote URL (WORK_MEDIA.md's
+    handoff contract: "asset rows ... each with a real uri on disk"). Verified live
+    that leaving `uri` as the Wikimedia/LoC download URL directly broke assemble.py
+    outright: its `Path(asset.uri).exists()` check is never true for a URL string, so
+    every segment silently looked image-less and the whole render failed with "no
+    segment images available." Cached by (source, source_id) so re-running never
+    re-downloads an asset already on disk."""
+    suffix = Path(urlsplit(remote_uri).path).suffix or ".jpg"
+    dest = cache_dir() / "images" / f"{source}_{source_id}{suffix}"
+    if not dest.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        response = get_http_client().get(remote_uri, follow_redirects=True)
+        response.raise_for_status()
+        atomic_write_bytes(dest, response.content)
+    return str(dest)
+
+
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
     if video is None or Status(video.status) != Status.FETCHING_IMAGES:
@@ -144,6 +166,12 @@ def run(session: Session, video_id: uuid.UUID) -> None:
             select(Asset).filter_by(source=found["source"], source_id=found["source_id"])
         ).scalar_one_or_none()
         if asset is None:
+            try:
+                local_path = _download_image(found["uri"], found["source"], found["source_id"])
+            except httpx.HTTPError as exc:
+                logger.warning("failed to download image for {!r}: {}", segment.image_query, exc)
+                continue
+            found = {**found, "uri": local_path}
             asset = Asset(kind="image", **found)
             session.add(asset)
             session.flush()  # need asset.id before pointing the segment at it

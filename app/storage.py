@@ -29,6 +29,15 @@ def output_dir(video_id: uuid.UUID) -> Path:
     return p
 
 
+def cache_dir() -> Path:
+    """Shared, cross-video cache — e.g. downloaded source images, deduplicated and
+    reused across segments/videos via the `asset` table's (source, source_id) key.
+    Not video-specific, unlike work_dir/output_dir."""
+    p = _storage_base() / "cache"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write via a ``.tmp`` file + rename so a crash mid-write never leaves a partial file."""
     tmp = path.with_name(path.name + ".tmp")
