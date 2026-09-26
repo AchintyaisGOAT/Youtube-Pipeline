@@ -39,7 +39,16 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         if segment.image_asset_id is not None or not segment.text:
             continue
 
-        prompt = f"{config.images.art_style}\n\nIllustrate this moment: {segment.text}"
+        # The video's topic must be in every prompt, not just the isolated sentence --
+        # verified live that a vague, self-referential line ("We all know the rhyme.")
+        # with no surrounding context produced a scene about generic nursery rhymes
+        # around the world, with no connection to the actual video (a true-crime case),
+        # because "the rhyme" has no clear referent on its own.
+        prompt = (
+            f"{config.images.art_style}\n\n"
+            f"This is one scene from a video about: {video.title}\n"
+            f"Illustrate this specific moment from that video: {segment.text}"
+        )
         source_id = _prompt_hash(prompt)
 
         asset = session.execute(
