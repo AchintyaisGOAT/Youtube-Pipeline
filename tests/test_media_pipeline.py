@@ -127,8 +127,9 @@ def test_caption_for_uses_existing_caption_or_falls_back_to_covered_segment_text
 # _subtitles.py — golden fixture: deterministic SRT output from fixed segments
 # --------------------------------------------------------------------------- #
 GOLDEN_SRT = (
-    "1\n00:00:00,000 --> 00:00:02,200\nRome was not built in a day.\n\n"
-    "2\n00:00:02,200 --> 00:00:04,500\nCaesar crossed the Rubicon.\n\n"
+    "1\n00:00:00,000 --> 00:00:01,257\nRome was not built\n\n"
+    "2\n00:00:01,257 --> 00:00:02,200\nin a day.\n\n"
+    "3\n00:00:02,200 --> 00:00:04,500\nCaesar crossed the Rubicon.\n\n"
 )
 
 

@@ -148,7 +148,7 @@ class Voice(_Model):
 
 class Subtitles(_Model):
     font_file: str = "assets/fonts/Inter-Regular.ttf"
-    size: int = Field(48, ge=8, le=200)
+    size: int = Field(34, ge=8, le=200)
     position: str = "bottom-center"
     max_lines: int = Field(2, ge=1, le=4)
     highlight_color: str = "#FFD23F"

@@ -323,7 +323,7 @@
           "type": "string"
         },
         "size": {
-          "default": 48,
+          "default": 34,
           "maximum": 200,
           "minimum": 8,
           "title": "Size",

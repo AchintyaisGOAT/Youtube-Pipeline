@@ -25,6 +25,12 @@ _ALIGNMENT_BY_POSITION = {
     "top-center": 8,
 }
 
+#: Short word-bursts, not a full sentence sitting on screen for its whole duration --
+#: direct feedback on a real render: a full-sentence caption at a large font covered too
+#: much of the illustration. A TikTok/Reels-style caption (a few words at a time) shows
+#: far less text at once while covering the same ground over the segment's duration.
+_WORDS_PER_CAPTION = 4
+
 
 def _word_windows(text: str, start_s: float, end_s: float) -> list[tuple[str, float, float]]:
     words = text.split()
@@ -34,10 +40,16 @@ def _word_windows(text: str, start_s: float, end_s: float) -> list[tuple[str, fl
     return [(w, start_s + i * step, start_s + (i + 1) * step) for i, w in enumerate(words)]
 
 
-def _karaoke_text(text: str, start_s: float, end_s: float) -> str:
+def _chunk(windows: list[tuple[str, float, float]], size: int) -> list[list[tuple[str, float, float]]]:
+    return [windows[i : i + size] for i in range(0, len(windows), size)]
+
+
+def _caption_text(chunk: list[tuple[str, float, float]], karaoke: bool) -> str:
     """ASS `\\k` tags take centiseconds of *duration*, not absolute time."""
+    if not karaoke:
+        return " ".join(word for word, _, _ in chunk)
     parts = []
-    for word, w_start, w_end in _word_windows(text, start_s, end_s):
+    for word, w_start, w_end in chunk:
         centis = max(1, round((w_end - w_start) * 100))
         parts.append(f"{{\\k{centis}}}{word}")
     return " ".join(parts)
@@ -64,17 +76,14 @@ def build_subtitles(segments: list[Segment], config: ChannelConfig) -> pysubs2.S
     for segment in segments:
         if segment.start_s is None or segment.end_s is None:
             continue
-        text = (
-            _karaoke_text(segment.text, segment.start_s, segment.end_s)
-            if config.subtitles.karaoke
-            else segment.text
-        )
-        subs.events.append(
-            pysubs2.SSAEvent(
-                start=pysubs2.make_time(s=segment.start_s),
-                end=pysubs2.make_time(s=segment.end_s),
-                text=text,
-                style="Default",
+        windows = _word_windows(segment.text, segment.start_s, segment.end_s)
+        for chunk in _chunk(windows, _WORDS_PER_CAPTION):
+            subs.events.append(
+                pysubs2.SSAEvent(
+                    start=pysubs2.make_time(s=chunk[0][1]),
+                    end=pysubs2.make_time(s=chunk[-1][2]),
+                    text=_caption_text(chunk, config.subtitles.karaoke),
+                    style="Default",
+                )
             )
-        )
     return subs

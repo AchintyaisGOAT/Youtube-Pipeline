@@ -70,7 +70,7 @@ voice:                             # Kokoro ONNX — verify IDs against the koko
 
 subtitles:
   font_file: "assets/fonts/Inter-Regular.ttf"   # path, not family name — libass needs the file
-  size: 48
+  size: 34
   position: "bottom-center"
   max_lines: 2
   highlight_color: "#FFD23F"
