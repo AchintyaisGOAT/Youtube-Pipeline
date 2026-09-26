@@ -20,13 +20,20 @@ from app.db import LlmCache
 from app.quota import check_and_increment
 
 #   gemini-2.5-flash (DESIGN.md's original pick) returns 404 "no longer available to
-#   new users" as of 2026-09 -- verified live against a real key. Using the "latest"
-#   alias instead of a dated model id so this doesn't go stale the same way again;
-#   confirmed live that it currently resolves to a real, working flash-tier model
-#   (plain + JSON-mode calls succeeded; Search grounding request shape was confirmed
-#   correct too -- a 429 from its separate, tighter free quota during rapid testing,
-#   not a code error). If this ever 404s, re-check `client.models.list()`.
-MODEL = "gemini-flash-latest"
+#   new users" as of 2026-09 -- verified live against a real key.
+#
+#   Tried "gemini-flash-latest" next, on the theory that an auto-resolving alias
+#   can't go stale the same way -- but verified live that it currently points to
+#   gemini-3.8-flash, a brand-new release with a free tier capped at 5 requests/MINUTE
+#   *and* 20 requests/DAY. A real gate.py run against 20 real candidates burned that
+#   day's quota in two batches. Brand-new model releases often ship with very tight
+#   initial free quotas before Google scales them up, and "latest" will happily land
+#   on the next one too. Pinned to gemini-3.1-flash-lite instead: a few releases
+#   older, verified live across many calls this session with zero rate-limit errors.
+#   Trades "always the newest model" for confirmed-working today; revisit if this
+#   ever 404s the way 2.5-flash did (re-check `client.models.list()`), and reconsider
+#   once "latest" has had time to mature past its launch-week quota.
+MODEL = "gemini-3.1-flash-lite"
 
 _client = None
 
@@ -50,17 +57,29 @@ def _estimate_tokens(prompt: str) -> int:
     return max(1, len(prompt) // 4)
 
 
-def _generate_with_retry(model: str, prompt: str, config):
+def _is_transient(exc: BaseException) -> bool:
     """A 503 ("high demand") is genuinely transient per Google's own error message —
     confirmed live that a freshly-launched flash model can 503 repeatedly for minutes
-    at a time under load, so give it real backoff room rather than the SDK's own brief
-    internal retry. A 404/400/permission error is not transient and should fail fast,
-    which `retry_if_exception_type` already ensures by not matching those."""
+    at a time under load. A 429 ("RESOURCE_EXHAUSTED") is also transient — verified
+    live against the free tier's per-model-per-minute cap (5 RPM for gemini-3.8-flash,
+    which `gemini-flash-latest` currently resolves to): Google's own response includes
+    a `RetryInfo.retryDelay`, this is a "slow down," not a hard failure. A 404/400/403
+    (not verified, wrong model, access denied) is NOT transient and must fail fast —
+    checking the numeric code rather than blanket-retrying every ClientError is what
+    keeps a real access-denial (seen live once already this session) from being
+    retried for a minute before finally surfacing."""
     from google.genai import errors as genai_errors
-    from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+    if isinstance(exc, genai_errors.ServerError):
+        return True
+    return isinstance(exc, genai_errors.ClientError) and getattr(exc, "code", None) == 429
+
+
+def _generate_with_retry(model: str, prompt: str, config):
+    from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
     for attempt in Retrying(
-        retry=retry_if_exception_type(genai_errors.ServerError),
+        retry=retry_if_exception(_is_transient),
         wait=wait_exponential(multiplier=3, min=5, max=60),
         stop=stop_after_attempt(5),
         reraise=True,

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import uuid
 
+import httpx
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -69,9 +71,24 @@ def _loc_license(item: dict) -> tuple[str, str] | None:
     return "public-domain-us", item.get("url", "")
 
 
+def _safe_search(fn, query: str, source_name: str) -> list[dict]:
+    """A source being unreachable (down, blocked, rate-limited) must not crash the
+    whole stage -- verified live that loc.gov now sits behind a Cloudflare bot
+    challenge (a 403 "Just a moment..." interstitial no plain HTTP client can pass),
+    which used to propagate all the way up and fail the entire video over a single
+    segment's fallback image lookup. Treat any request failure as "no results from
+    this source" so the caller falls through to the next source, or leaves the
+    segment image-less -- both already-handled, non-fatal outcomes."""
+    try:
+        return fn(query)
+    except httpx.HTTPError as exc:
+        logger.warning("{} image search failed for {!r}: {}", source_name, query, exc)
+        return []
+
+
 def _find_image(query: str, sources: list[str]) -> dict | None:
     if "wikimedia" in sources:
-        for page in _search_commons(query):
+        for page in _safe_search(_search_commons, query, "wikimedia"):
             license_info = _commons_license(page)
             if license_info is None:
                 continue
@@ -89,7 +106,7 @@ def _find_image(query: str, sources: list[str]) -> dict | None:
                 "attribution": page.get("title", ""),
             }
     if "loc" in sources:
-        for item in _search_loc(query):
+        for item in _safe_search(_search_loc, query, "loc"):
             license_info = _loc_license(item)
             if license_info is None:
                 continue
