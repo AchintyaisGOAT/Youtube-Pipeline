@@ -26,6 +26,8 @@ topics:                         # README §4.3
 discovery:                      # README §4.1 — runs when no passed topic is waiting
   sources: ["trending", "on_this_day"]
   max_candidates: 20
+  min_relevance: 6              # gate relevance (0-10) needed to pass
+  max_topic_age_days: 7         # unused passed topics expire after this
 
 llm:                            # README §5 — confirm IDs/limits in AI Studio + Groq console
   writer: "gemini-3.8-flash"    # script + metadata

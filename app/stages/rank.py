@@ -14,11 +14,11 @@ from app.status import IN_PROGRESS, Status, TopicStatus
 
 
 def score(topic: Topic) -> float:
-    """Trend strength (pageview rank 1 = strongest) + the gate's 0–10 niche relevance."""
+    """Trend strength (0–1, set by discover: 1/pageview rank for trending, anniversary
+    roundness for On this day) + the gate's 0–10 niche relevance scaled to 0–1."""
     raw = topic.raw or {}
-    rank = raw.get("rank")
-    trend = 1.0 / rank if isinstance(rank, int | float) and rank > 0 else 0.0
-    relevance = raw.get("relevance", 0)
+    trend, relevance = raw.get("trend", 0), raw.get("relevance", 0)
+    trend = trend if isinstance(trend, int | float) else 0.0
     return trend + (relevance / 10 if isinstance(relevance, int | float) else 0.0)
 
 

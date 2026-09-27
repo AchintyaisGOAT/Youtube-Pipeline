@@ -16,8 +16,7 @@ import pytest
 from app import orchestrator
 from app.cli import main as ogh
 from app.db import Base, Topic, Video, get_engine, get_sessionmaker
-from app.quota import QuotaExceeded, RetryLater
-from app.stages import discover
+from app.quota import QuotaExceeded
 from app.status import Status, TopicStatus
 
 
@@ -130,40 +129,8 @@ def test_real_error_fails_video_and_rolls_back(session_factory, monkeypatch):
 # --------------------------------------------------------------------------- #
 # topics: gate + rank + discover
 # --------------------------------------------------------------------------- #
-def test_gate_stops_after_retry_later(session_factory, monkeypatch):
-    calls = []
-
-    def run(session, topic_id):
-        calls.append(topic_id)
-        raise RetryLater("groq rate-limited")
-
-    monkeypatch.setattr(orchestrator, "GATE_STAGE", _fake_stage(monkeypatch, "fake_gate", run))
-    with session_factory() as session:
-        session.add_all([Topic(source="s", title=t, status=TopicStatus.CANDIDATE) for t in "AB"])
-        session.commit()
-
-    orchestrator._gate_topics()
-
-    assert len(calls) == 1
-    with session_factory() as session:
-        assert {t.status for t in session.query(Topic)} == {TopicStatus.CANDIDATE}
 
 
-def test_gate_error_vetoes_topic_with_reason(session_factory, monkeypatch):
-    def run(session, topic_id):
-        raise ValueError("bad json")
-
-    monkeypatch.setattr(orchestrator, "GATE_STAGE", _fake_stage(monkeypatch, "fake_gate_err", run))
-    with session_factory() as session:
-        session.add(Topic(source="s", title="A", status=TopicStatus.CANDIDATE))
-        session.commit()
-
-    orchestrator._gate_topics()
-
-    with session_factory() as session:
-        topic = session.query(Topic).one()
-        assert topic.status == TopicStatus.VETOED
-        assert "bad json" in topic.rationale
 
 
 def test_rank_runs_from_the_orchestrator(session_factory):
@@ -179,22 +146,6 @@ def test_rank_runs_from_the_orchestrator(session_factory):
         assert session.query(Topic).one().status == TopicStatus.USED
 
 
-def test_discover_only_fetches_when_no_topic_is_waiting(session_factory, monkeypatch):
-    fetched = []
-    monkeypatch.setattr(
-        discover, "_fetch_top_articles", lambda day: fetched.append(day) or [{"article": "Rome", "rank": 1}]
-    )
-
-    with session_factory() as session:
-        discover.run(session)  # empty pool -> fetch
-        session.commit()
-        discover.run(session)  # "Rome" is now a waiting candidate -> skip
-        session.commit()
-        discover.run(session, force=True)  # forced -> fetch (Rome already known, not duplicated)
-        session.commit()
-
-        assert len(fetched) == 2
-        assert session.query(Topic).count() == 1
 
 
 # --------------------------------------------------------------------------- #

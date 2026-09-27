@@ -118,9 +118,9 @@ video's `status`.
 
 | # | Stage | Where | Tool | Output |
 |---|---|---|---|---|
-| 1 | **Discover** topics. Runs when no passed topic is waiting. | Cloud | Wikimedia Pageviews (trending, filtered to history) + Wikipedia "On this day" | Candidate topics |
-| 2 | **Gate**: drop auto-veto topics (§4.3) and score niche relevance | Cloud | LLM (§5), all new candidates in one call | Passed / vetoed, with a relevance score |
-| 3 | **Rank** and pick the next topic, only when no other video is in progress | Local | Python score: trend strength + relevance + never done before | One chosen topic → new video |
+| 1 | **Discover** topics. Runs when no passed topic is waiting; unused passed topics expire after 7 days. A free pre-filter on each article's short description drops meta pages, living people, anything dated 2000+, and entertainment/sport before any LLM sees it. | Cloud | Wikimedia Pageviews (trending) + Wikipedia "On this day" (today + 2 days) | Candidate topics |
+| 2 | **Gate**: drop auto-veto and off-niche topics (§4.3), score relevance 0–10; below 6 is vetoed | Cloud | LLM (§5), up to 20 candidates per call | Passed / vetoed, with a relevance score |
+| 3 | **Rank** and pick the next topic, only when no other video is in progress | Local | Python score: trend (log pageview rank, or anniversary roundness: 100th > 50th > 25th > 10th) + relevance; titles never repeat | One chosen topic → new video |
 | 4 | **Research**: fetch the topic's Wikipedia article plus up to 3 articles linked from its lead section (no LLM) | Cloud | Wikipedia API | Article texts + their references (the video's source list) |
 | 5 | **Script**, 3–8 min, **only from the researched articles**, with 7 `[SHORT]` passages marked | Cloud | LLM (§5) | Script |
 | 6 | **Check**: every claim must appear in the articles. Unsupported claims are removed or rewritten. | Cloud | A *different* LLM from the writer (§5) | Checked script |
@@ -454,6 +454,7 @@ Then:
 | 2026-09-27 | `ogh review`: approve / reject / send back to a stage / pick title / mark uploaded. Cleanup: work files deleted on approval, kit 30 days after upload. |
 | 2026-09-27 | Structure: `ogh` CLI, `app/stages/`, committed `config.yaml`, this README as the only doc. Python stays 3.11. |
 | 2026-09-27 | LLM router: stages ask for a role (writer/checker/worker/image), never a model. If any model in the chain is only rate-limited the video waits for the next run rather than failing. Cache keyed by role, so fallback answers are reused. Local caps only for Groq (1,000 req / 200K tokens per UTC day); Gemini's own 429s do the rest. |
+| 2026-09-27 | Topics: free description pre-filter before the gate; gate batched (20/call) and told history is broad (crimes, mysteries, people, inventions count if pre-2000) after a live run vetoed Lizzie Borden; pass needs relevance ≥ 6; passed topics expire after 7 days so the pool stays fresh; trend on a log scale so trending and anniversaries compete fairly. |
 | 2026-09-27 | `awaiting_review` merged into `packaged` (same meaning). Encoder output forced to limited-range 4:2:0 (`-color_range tv`): archival JPEGs are full-range and QSV otherwise tags output `yuvj420p`. |
 
 ---
@@ -466,7 +467,7 @@ Then:
 | S0 | This README | ✅ Done |
 | S1 | Restructure: `ogh` CLI, `app/stages/`, committed `config.yaml`, remove old docs/scripts, YouTube API, analytics, OAuth; Quick Sync encoder; README statuses/tables | ✅ Done — the pipeline pauses at `scripted` until the check stage lands in S4 |
 | S2 | LLM routing (Gemini + Groq), model IDs in config, `llm_call` table | ✅ Done — verified live against both providers |
-| S3 | Discover (both sources), gate + relevance, rank with one video at a time | ⬜ |
+| S3 | Discover (both sources), gate + relevance, rank with one video at a time | ✅ Done — verified live (1 Groq call gated 19 topics) |
 | S4 | Research (article + linked), script, check, scene plan | ⬜ |
 | S5 | Images: archive chain → broader → AI → reuse, licenses | ⬜ |
 | S6 | Narration (2 voices), Whisper timing, assembly (sync, subtitles, motion, music, Quick Sync) | ⬜ |

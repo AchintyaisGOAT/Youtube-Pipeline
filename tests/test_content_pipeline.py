@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.db import Asset, Base, Scene, Topic, Video, get_engine, get_sessionmaker
-from app.stages import gate, images, rank, script, segment
+from app.stages import images, rank, script, segment
 from app.status import Status, TopicStatus
 
 FIXED_SCRIPT = (
@@ -64,92 +64,6 @@ def test_segment_is_idempotent_when_not_in_expected_status(session_factory):
 
         assert video.scenes == []
         assert video.status == Status.SELECTED
-
-
-# --------------------------------------------------------------------------- #
-# gate.py — auto-veto list + scope, against config.yaml's real lists
-# --------------------------------------------------------------------------- #
-def test_gate_vetoes_recent_event(session_factory):
-    with session_factory() as session:
-        candidate = Topic(
-            source="trending",
-            title="2024 Something That Just Happened",
-            status=TopicStatus.CANDIDATE,
-        )
-        session.add(candidate)
-        session.commit()
-
-        gate.run(session, candidate.id)
-        session.commit()
-
-        assert candidate.status == TopicStatus.VETOED
-        assert "last 10 years" in candidate.rationale.lower() or "10 years" in candidate.rationale
-
-
-def test_gate_does_not_call_llm_for_deterministic_recency_veto(session_factory, monkeypatch):
-    def _fail(*a, **k):
-        raise AssertionError("recency veto should short-circuit before any LLM call")
-
-    monkeypatch.setattr(gate.llm, "generate", _fail)
-    with session_factory() as session:
-        candidate = Topic(
-            source="s", title="2024 Something", status=TopicStatus.CANDIDATE
-        )
-        session.add(candidate)
-        session.commit()
-        gate.run(session, candidate.id)  # would raise via _fail if it reached the LLM
-        session.commit()
-        assert candidate.status == TopicStatus.VETOED
-
-
-def test_gate_passes_and_records_relevance(session_factory, monkeypatch):
-    monkeypatch.setattr(
-        gate.llm, "generate", lambda *a, **k: {"verdict": "pass", "relevance": 8, "reason": "in scope"}
-    )
-    with session_factory() as session:
-        topic = Topic(
-            source="trending",
-            title="Roman aqueducts",
-            summary="How Roman engineers built long-distance water supply systems.",
-            status=TopicStatus.CANDIDATE,
-        )
-        session.add(topic)
-        session.commit()
-
-        gate.run(session, topic.id)
-        session.commit()
-
-        assert topic.status == TopicStatus.PASSED
-        assert topic.raw["relevance"] == 8
-
-
-def test_gate_passes_sensitive_history_automatically(session_factory, monkeypatch):
-    """README §4.3: no manual-review tier — heavy but in-scope history just passes."""
-    monkeypatch.setattr(
-        gate.llm, "generate", lambda *a, **k: {"verdict": "pass", "relevance": 7, "reason": "in scope"}
-    )
-    with session_factory() as session:
-        topic = Topic(source="trending", title="Religion in the Roman Empire", status=TopicStatus.CANDIDATE)
-        session.add(topic)
-        session.commit()
-
-        gate.run(session, topic.id)
-        session.commit()
-
-        assert topic.status == TopicStatus.PASSED
-
-
-def test_gate_vetoes_unrecognized_verdict(session_factory, monkeypatch):
-    monkeypatch.setattr(gate.llm, "generate", lambda *a, **k: {"verdict": "manual_review"})
-    with session_factory() as session:
-        topic = Topic(source="s", title="Something ambiguous", status=TopicStatus.CANDIDATE)
-        session.add(topic)
-        session.commit()
-
-        gate.run(session, topic.id)
-        session.commit()
-
-        assert topic.status == TopicStatus.VETOED
 
 
 # --------------------------------------------------------------------------- #

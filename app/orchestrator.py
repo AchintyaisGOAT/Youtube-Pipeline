@@ -2,7 +2,7 @@
 worker, no scheduler: you run it when you choose, and it's safe to stop and restart.
 
 1. discover   — only when no topic is waiting (app/stages/discover.py)
-2. gate       — every `candidate` topic
+2. gate       — every `candidate` topic, in batched LLM calls
 3. rank       — starts a video from the best passed topic, if none is in progress
 4. videos     — each non-terminal video is walked through as many stages as it can go,
                 until it reaches review, fails, or is deferred
@@ -117,21 +117,20 @@ def _mark(model, row_id: uuid.UUID, status: str, error: Exception | None = None)
 
 
 def _gate_topics() -> None:
+    """One batched gate call per run. If the gate itself breaks (every model errored),
+    the waiting candidates are vetoed with the reason — otherwise they'd sit in the pool
+    forever and discovery (which waits for an empty pool) would never run again."""
     gate = _load_stage(GATE_STAGE)
     if gate is None:
         return
+    outcome, error = _attempt("gate", gate.run)
+    if outcome is not Outcome.FAILED:
+        return
     with get_sessionmaker()() as session:
-        pending = list(
-            session.execute(select(Topic.id).filter_by(status=TopicStatus.CANDIDATE)).scalars()
-        )
-
+        pending = list(session.execute(select(Topic.id).filter_by(status=TopicStatus.CANDIDATE)).scalars())
     for topic_id in pending:
-        outcome, error = _attempt(f"topic {topic_id} gate", lambda s, t=topic_id: gate.run(s, t))
-        if outcome is Outcome.DEFERRED:
-            break  # quota/provider trouble hits every remaining topic the same way
-        if outcome is Outcome.FAILED:
-            _mark(Topic, topic_id, TopicStatus.VETOED, error)
-            notify.alert(f"topic {topic_id} failed at gate")
+        _mark(Topic, topic_id, TopicStatus.VETOED, error)
+    notify.alert(f"gate failed; {len(pending)} candidate topic(s) vetoed")
 
 
 def _advance_video(video_id: uuid.UUID) -> None:

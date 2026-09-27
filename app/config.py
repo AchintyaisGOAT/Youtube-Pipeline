@@ -78,6 +78,11 @@ class Discovery(_Model):
         default_factory=lambda: ["trending", "on_this_day"], min_length=1
     )
     max_candidates: int = Field(20, ge=1, le=200)
+    #: Gate relevance (0–10) a topic needs to pass; weaker fits are vetoed.
+    min_relevance: int = Field(6, ge=0, le=10)
+    #: Passed topics older than this expire, so trending topics don't go stale and
+    #: discovery (which waits for an empty pool) refreshes it.
+    max_topic_age_days: int = Field(7, ge=1, le=365)
 
 
 class Llm(_Model):
