@@ -2,7 +2,7 @@
 
     uv run ogh run [--discover]   advance everything as far as possible
     uv run ogh review             review packaged videos
-    uv run ogh doctor             green/red health check
+    uv run ogh doctor [--live]    green/red health check (--live: keys + model IDs online)
 
 `review` owns its own session/commit because a human, not the orchestrator, drives it.
 Send-back, title picking and mark-uploaded arrive in S8.
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from sqlalchemy import select, text
 
-from app import orchestrator
+from app import llm, orchestrator
 from app.config import get_config, get_settings
 from app.db import Base, Short, Video, get_engine, session_scope
 from app.ffmpeg import pick_encoder
@@ -143,6 +143,30 @@ def _check_disk_space() -> tuple[bool, str]:
     return free_gb >= needed, f"{free_gb:.1f} GB free (need {needed})"
 
 
+def _available_models(provider: str) -> set[str]:
+    """Model IDs the configured key can use. Listing models costs no generation quota."""
+    if provider == "gemini":
+        return {m.name.removeprefix("models/") for m in llm._gemini().models.list()}
+    return {m.id for m in llm._groq().models.list()}
+
+
+def _check_models() -> tuple[bool, str]:
+    """--live only: every model ID in config.yaml exists for its provider's key."""
+    cfg = get_config().llm
+    wanted = {m for m in (cfg.writer, cfg.writer_fallback, cfg.checker, cfg.worker,
+                          cfg.worker_fallback, cfg.image) if m}
+    problems = []
+    for provider in sorted({llm.provider_of(m) for m in wanted}):
+        try:
+            available = _available_models(provider)
+        except Exception as exc:
+            problems.append(f"{provider} key rejected or unreachable ({type(exc).__name__}: {exc})")
+            continue
+        problems += [f"{m} not available" for m in sorted(wanted) if llm.provider_of(m) == provider
+                     and m not in available]
+    return (False, "; ".join(problems)) if problems else (True, f"{len(wanted)} configured models found")
+
+
 CHECKS = {
     "config": _check_config,
     "env_keys": _check_env_keys,
@@ -152,9 +176,10 @@ CHECKS = {
 }
 
 
-def doctor() -> int:
+def doctor(*, live: bool = False) -> int:
+    checks = {**CHECKS, "models": _check_models} if live else CHECKS
     all_ok = True
-    for name, check in CHECKS.items():
+    for name, check in checks.items():
         ok, detail = check()
         all_ok &= ok
         print(f"[{'OK  ' if ok else 'FAIL'}] {name:<12} {detail}")
@@ -172,11 +197,14 @@ def main(argv: list[str] | None = None) -> int:
         "--discover", action="store_true", help="look for new topics even if some are waiting"
     )
     commands.add_parser("review", help="review packaged videos")
-    commands.add_parser("doctor", help="green/red health check")
+    doctor_parser = commands.add_parser("doctor", help="green/red health check")
+    doctor_parser.add_argument(
+        "--live", action="store_true", help="also check the API keys and model IDs online"
+    )
     args = parser.parse_args(argv)
 
     if args.command == "doctor":
-        return doctor()
+        return doctor(live=args.live)
 
     get_config()  # fail fast on a bad config.yaml, before touching anything
     Base.metadata.create_all(get_engine())

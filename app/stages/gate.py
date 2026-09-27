@@ -58,7 +58,7 @@ def run(session: Session, topic_id: uuid.UUID) -> None:
         in_scope="\n".join(f"- {p}" for p in config.topics.in_scope),
         auto_veto="\n".join(f"- {p}" for p in config.topics.auto_veto),
     )
-    result = llm.generate(session, prompt, inputs={"topic_id": str(topic_id)})
+    result = llm.generate(session, prompt, role="worker", step="gate", inputs={"topic_id": str(topic_id)})
     verdict = result.get("verdict")
     relevance = result.get("relevance")
 

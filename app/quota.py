@@ -1,19 +1,19 @@
-"""Daily API budget enforcement against `api_quota_ledger`.
+"""Daily free-tier budgets, counted from today's `llm_call` rows (README §5).
 
-Call ``check_and_increment()`` before every metered call (YouTube upload units, Gemini
-requests/tokens). It raises ``QuotaExceeded`` instead of proceeding once today's budget
-for that API is spent. ``QuotaExceeded`` is a ``RetryLater``: the orchestrator leaves the
-row's status untouched and picks it up again on a later run, rather than failing it.
+``check()`` runs before every provider call and raises ``QuotaExceeded`` once today's
+local cap for that provider is spent. ``QuotaExceeded`` is a ``RetryLater``: app/llm.py
+tries the fallback model, and if that's unavailable too the orchestrator leaves the
+video's status untouched and the next run resumes it — a limit never fails a video.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db import ApiQuotaLedger
+from app.db import LlmCall
 
 
 class RetryLater(Exception):
@@ -22,36 +22,44 @@ class RetryLater(Exception):
 
 
 class QuotaExceeded(RetryLater):
-    """Raised when a call would push today's usage for an API past its daily cap."""
+    """Raised when a call would push today's usage for a provider past its local cap."""
 
 
-#: Conservative daily caps per external API, keyed by counter. `units` is YouTube quota
-#: units for "youtube" and the request count for the Gemini APIs. A missing API or
-#: counter means "counted, but no local cap" — the provider's own 429 still applies and
-#: surfaces as RetryLater via app/llm.py. Set Gemini request caps once the real free-tier
-#: limits for the pinned models are known.
+#: Local daily caps per provider (UTC day). A missing entry means "counted, no local cap"
+#: — the provider's own 429 still applies and surfaces as RetryLater via app/llm.py.
+#: Groq's free-tier numbers are documented (README §5); Gemini's per-model limits are
+#: only visible in the AI Studio dashboard, so they're left to the provider.
 DAILY_LIMITS: dict[str, dict[str, int]] = {
-    "youtube": {"units": 10_000},
-    "gemini": {"tokens": 1_000_000},
-    "gemini_image": {},
+    "groq": {"requests": 1_000, "tokens": 200_000},
 }
 
+#: Outcomes that actually reached the provider (and so count as usage).
+_COUNTED = ("ok", "error", "retry_later")
 
-def check_and_increment(session: Session, api: str, units: int = 0, tokens: int = 0) -> None:
-    today = date.today()
-    row = session.execute(select(ApiQuotaLedger).filter_by(api=api, day=today)).scalar_one_or_none()
-    used_units = row.units_used if row else 0
-    used_tokens = row.tokens_used if row else 0
 
-    limits = DAILY_LIMITS.get(api, {})
-    unit_cap, token_cap = limits.get("units"), limits.get("tokens")
-    if units and unit_cap is not None and used_units + units > unit_cap:
-        raise QuotaExceeded(f"{api} daily unit budget exhausted ({used_units + units} > {unit_cap})")
-    if tokens and token_cap is not None and used_tokens + tokens > token_cap:
-        raise QuotaExceeded(f"{api} daily token budget exhausted ({used_tokens + tokens} > {token_cap})")
+def usage_today(session: Session, provider: str) -> tuple[int, int]:
+    """(requests, tokens) sent to `provider` since 00:00 UTC."""
+    start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    requests, tokens = session.execute(
+        select(
+            func.count(LlmCall.id),
+            func.coalesce(func.sum(LlmCall.prompt_tokens), 0)
+            + func.coalesce(func.sum(LlmCall.response_tokens), 0),
+        ).where(
+            LlmCall.provider == provider,
+            LlmCall.outcome.in_(_COUNTED),
+            LlmCall.created_at >= start,
+        )
+    ).one()
+    return requests, tokens
 
-    if row is None:
-        session.add(ApiQuotaLedger(api=api, day=today, units_used=units, tokens_used=tokens))
-    else:
-        row.units_used = used_units + units
-        row.tokens_used = used_tokens + tokens
+
+def check(session: Session, provider: str) -> None:
+    limits = DAILY_LIMITS.get(provider)
+    if not limits:
+        return
+    requests, tokens = usage_today(session, provider)
+    if "requests" in limits and requests >= limits["requests"]:
+        raise QuotaExceeded(f"{provider}: {requests} requests today (cap {limits['requests']})")
+    if "tokens" in limits and tokens >= limits["tokens"]:
+        raise QuotaExceeded(f"{provider}: {tokens} tokens today (cap {limits['tokens']})")

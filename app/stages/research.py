@@ -1,4 +1,5 @@
-"""Gemini + Search grounding: research a video's topic into sourced claims.
+"""Research a video's topic into sourced claims (temporary: an ungrounded LLM call —
+S4 replaces this with the Wikipedia article text, README §4.1 step 4).
 
 Writes ``video.research`` as ``{"claims": [{"text": str, "sources": [str, ...]}, ...]}``.
 factcheck.py (next stage) verifies each claim against its cited sources.
@@ -32,7 +33,7 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         in_scope=", ".join(config.topics.in_scope),
     )
 
-    result = llm.generate(session, prompt, inputs={"video_id": str(video_id)}, grounding=True)
+    result = llm.generate(session, prompt, role="writer", step="research", inputs={"video_id": str(video_id)})
     if not isinstance(result, dict) or not result.get("claims"):
         raise ValueError(f"video {video_id}: research returned no claims")
 

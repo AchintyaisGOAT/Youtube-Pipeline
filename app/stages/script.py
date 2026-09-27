@@ -36,7 +36,9 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         shorts_count=config.video.shorts.per_video,
     )
 
-    script_text = llm.generate(session, prompt, inputs={"video_id": str(video_id)}, json_mode=False)
+    script_text = llm.generate(
+        session, prompt, role="writer", step="script", inputs={"video_id": str(video_id)}, json_mode=False
+    )
     if not isinstance(script_text, str) or "[SHORT]" not in script_text:
         raise ValueError(f"video {video_id}: script has no [SHORT] spans")
 

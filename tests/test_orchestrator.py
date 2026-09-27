@@ -1,5 +1,5 @@
 """app/orchestrator.py's dispatch/outcome rules (`ogh run`), plus the pieces it relies on:
-retry-later quota errors, discover-when-empty, and UTC datetimes.
+discover-when-empty and UTC datetimes. LLM routing/quota tests live in test_llm.py.
 
 Stage modules are swapped for fakes registered in `sys.modules`, so these exercise the
 orchestrator's own logic, not any real stage.
@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app import orchestrator, quota
+from app import orchestrator
 from app.cli import main as ogh
 from app.db import Base, Topic, Video, get_engine, get_sessionmaker
 from app.quota import QuotaExceeded, RetryLater
@@ -213,36 +213,6 @@ def test_datetimes_round_trip_as_aware_utc(session_factory):
         assert loaded.decided_at.tzinfo is not None
         assert loaded.created_at.tzinfo is not None
         assert abs((loaded.decided_at - decided).total_seconds()) < 1
-
-
-# --------------------------------------------------------------------------- #
-# quota + llm retry-later
-# --------------------------------------------------------------------------- #
-def test_quota_exceeded_is_retry_later_and_requests_are_counted(session_factory, monkeypatch):
-    assert issubclass(QuotaExceeded, RetryLater)
-    monkeypatch.setitem(quota.DAILY_LIMITS, "gemini", {"units": 2})
-    with session_factory() as session:
-        quota.check_and_increment(session, "gemini", units=1, tokens=10)
-        quota.check_and_increment(session, "gemini", units=1, tokens=10)
-        with pytest.raises(QuotaExceeded):
-            quota.check_and_increment(session, "gemini", units=1)
-
-
-def test_llm_turns_exhausted_rate_limit_into_retry_later(monkeypatch):
-    import tenacity
-    from google.genai import errors as genai_errors
-
-    from app import llm
-
-    class FakeModels:
-        def generate_content(self, **kwargs):
-            raise genai_errors.ClientError(429, {"error": {"message": "RESOURCE_EXHAUSTED"}})
-
-    monkeypatch.setattr(llm, "_client_instance", lambda: types.SimpleNamespace(models=FakeModels()))
-    monkeypatch.setattr(tenacity, "wait_exponential", lambda **kwargs: tenacity.wait_none())
-
-    with pytest.raises(RetryLater):
-        llm._generate_with_retry("some-model", "prompt", None)
 
 
 # --------------------------------------------------------------------------- #

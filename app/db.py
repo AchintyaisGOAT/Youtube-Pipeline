@@ -10,13 +10,12 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import (
     JSON,
     Boolean,
-    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -186,7 +185,7 @@ class Asset(Base):
 
 
 # --------------------------------------------------------------------------- #
-# render log + API usage + LLM cache
+# render log + LLM usage + LLM cache
 # --------------------------------------------------------------------------- #
 class Render(Base):
     """Append-only log of FFmpeg render attempts (long-form stages and Shorts)."""
@@ -211,21 +210,34 @@ class Render(Base):
     )
 
 
-class ApiQuotaLedger(Base):
-    __tablename__ = "api_quota_ledger"
-    __table_args__ = (UniqueConstraint("api", "day", name="uq_quota_api_day"),)
+class LlmCall(Base):
+    """One row per attempt to call an LLM/image provider (README §5, §8) — what the daily
+    free-tier checks in app/quota.py count, and how you see which model did what."""
+
+    __tablename__ = "llm_call"
 
     id: Mapped[uuid.UUID] = _pk()
-    api: Mapped[str] = mapped_column(String(40), nullable=False)  # gemini | gemini_image | ...
-    day: Mapped[date] = mapped_column(Date, nullable=False)
-    units_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False, index=True)  # gemini | groq
+    model: Mapped[str] = mapped_column(String(80), nullable=False)
+    step: Mapped[str] = mapped_column(String(40), nullable=False)  # gate | script | image | ...
+    #: ok | error | retry_later (provider rate-limited/overloaded) | over_budget (local
+    #: daily cap hit — never reached the provider, so not counted as usage)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    response_tokens: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False, index=True
+    )
 
 
 class LlmCache(Base):
+    """Cached text responses keyed by role + prompt + inputs (not model), so an answer
+    the fallback model produced is reused too; `model` records which one it was."""
+
     __tablename__ = "llm_cache"
 
-    key: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(model+prompt+inputs)
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256(role+prompt+inputs)
     model: Mapped[str] = mapped_column(String(80), nullable=False)
     response: Mapped[dict] = mapped_column(JSON, nullable=False)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)

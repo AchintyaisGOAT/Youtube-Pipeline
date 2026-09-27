@@ -53,7 +53,7 @@ def write_metadata(session: Session, video: Video) -> None:
         sources_block=sources_block,
     )
 
-    result = llm.generate(session, prompt, inputs={"video_id": str(video_id)})
+    result = llm.generate(session, prompt, role="writer", step="metadata", inputs={"video_id": str(video_id)})
     titles = result.get("titles", [])
     if not titles:
         raise ValueError(f"video {video_id}: metadata generation returned no title candidates")

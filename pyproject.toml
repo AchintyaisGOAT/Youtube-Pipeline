@@ -24,6 +24,7 @@ dependencies = [
     # media
     "pillow",
     "pysubs2",
+    "openai>=3.19.2",
 ]
 
 [project.scripts]

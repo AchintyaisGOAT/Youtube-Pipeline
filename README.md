@@ -169,7 +169,8 @@ redo it from there.
 ```powershell
 uv run ogh run       # advance everything as far as possible (--discover: look for topics now)
 uv run ogh review    # review finished videos: approve / reject / send back / pick title / mark uploaded
-uv run ogh doctor    # green/red health check of config, keys, DB, FFmpeg + encoder, disk, models, assets
+uv run ogh doctor    # green/red health check of config, keys, DB, FFmpeg + encoder, disk
+                     # (--live: also confirm the keys work and every model ID in config exists)
 ```
 
 ---
@@ -452,6 +453,7 @@ Then:
 | 2026-09-27 | Shorts re-rendered vertically from the scenes (not cropped). Thumbnail = best image + LLM hook. |
 | 2026-09-27 | `ogh review`: approve / reject / send back to a stage / pick title / mark uploaded. Cleanup: work files deleted on approval, kit 30 days after upload. |
 | 2026-09-27 | Structure: `ogh` CLI, `app/stages/`, committed `config.yaml`, this README as the only doc. Python stays 3.11. |
+| 2026-09-27 | LLM router: stages ask for a role (writer/checker/worker/image), never a model. If any model in the chain is only rate-limited the video waits for the next run rather than failing. Cache keyed by role, so fallback answers are reused. Local caps only for Groq (1,000 req / 200K tokens per UTC day); Gemini's own 429s do the rest. |
 | 2026-09-27 | `awaiting_review` merged into `packaged` (same meaning). Encoder output forced to limited-range 4:2:0 (`-color_range tv`): archival JPEGs are full-range and QSV otherwise tags output `yuvj420p`. |
 
 ---
@@ -463,7 +465,7 @@ Then:
 | G1 | Retry-later orchestration, multi-stage runs, UTC datetimes | ✅ Done (some parts reworked in S1/S3) |
 | S0 | This README | ✅ Done |
 | S1 | Restructure: `ogh` CLI, `app/stages/`, committed `config.yaml`, remove old docs/scripts, YouTube API, analytics, OAuth; Quick Sync encoder; README statuses/tables | ✅ Done — the pipeline pauses at `scripted` until the check stage lands in S4 |
-| S2 | LLM routing (Gemini + Groq), model IDs in config, `llm_call` table | ⬜ |
+| S2 | LLM routing (Gemini + Groq), model IDs in config, `llm_call` table | ✅ Done — verified live against both providers |
 | S3 | Discover (both sources), gate + relevance, rank with one video at a time | ⬜ |
 | S4 | Research (article + linked), script, check, scene plan | ⬜ |
 | S5 | Images: archive chain → broader → AI → reuse, licenses | ⬜ |
