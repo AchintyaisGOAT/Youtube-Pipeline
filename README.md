@@ -121,10 +121,10 @@ video's `status`.
 | 1 | **Discover** topics. Runs when no passed topic is waiting; unused passed topics expire after 7 days. A free pre-filter on each article's short description drops meta pages, living people, anything dated 2000+, and entertainment/sport before any LLM sees it. | Cloud | Wikimedia Pageviews (trending) + Wikipedia "On this day" (today + 2 days) | Candidate topics |
 | 2 | **Gate**: drop auto-veto and off-niche topics (§4.3), score relevance 0–10; below 6 is vetoed | Cloud | LLM (§5), up to 20 candidates per call | Passed / vetoed, with a relevance score |
 | 3 | **Rank** and pick the next topic, only when no other video is in progress | Local | Python score: trend (log pageview rank, or anniversary roundness: 100th > 50th > 25th > 10th) + relevance; titles never repeat | One chosen topic → new video |
-| 4 | **Research**: fetch the topic's Wikipedia article plus up to 3 articles linked from its lead section (no LLM) | Cloud | Wikipedia API | Article texts + their references (the video's source list) |
-| 5 | **Script**, 3–8 min, **only from the researched articles**, with 7 `[SHORT]` passages marked | Cloud | LLM (§5) | Script |
-| 6 | **Check**: every claim must appear in the articles. Unsupported claims are removed or rewritten. | Cloud | A *different* LLM from the writer (§5) | Checked script |
-| 7 | **Scene plan**: split into scenes of 5–7 s, each with image search terms | Cloud | LLM (§5) | Scene list |
+| 4 | **Research**: fetch the topic's Wikipedia article plus up to 3 linked articles. Candidates are the article's most-mentioned links (surnames count), minus generic pages; the worker LLM picks the ones that add the most story | Cloud | Wikipedia API + LLM (§5, one small call) | Article texts + their references (the video's source list) |
+| 5 | **Script**, 3–8 min, **only from the researched articles**, with 7 `[SHORT]` passages and every direct quotation marked `[QUOTE]` | Cloud | LLM (§5) | Script |
+| 6 | **Check**: every claim must appear in the articles. Unsupported claims are removed or rewritten, and each change is recorded for review. A check that breaks the markup or cuts over 40% of the words is treated as failed. | Cloud | A *different* LLM from the writer (§5) | Checked script + list of changes |
+| 7 | **Scene plan**: Python splits the script into scenes of about 5–7 s (never splitting a name or a `[SHORT]` edge, and keeping quotes whole), so the narration can't change. The LLM then writes one archive search query per scene. | Local + Cloud | Python + LLM (§5) | Scene list |
 | 8 | **Images** for each scene | Cloud | Archives, then AI fallback (§6.1) | Local image files + license records |
 | 9 | **Narration** | Local | Kokoro: `bm_george`, with `bf_emma` for quotes | WAV audio |
 | 10 | **Word timing** | Local | faster-whisper | A timestamp for every word |
@@ -186,7 +186,8 @@ All free tiers. Model IDs are set in `config.yaml`, so a model can be swapped wi
 | Research | *No LLM*: Wikipedia article text | — | Free, unlimited and trusted; its references become the source list |
 | Script | `gemini-3.8-flash` | Groq `openai/gpt-oss-120b` | Best free writing quality; reads all the articles (1M context) |
 | Check | `gemini-3.5-flash-lite` | — | Must differ from the writer; reads all the articles, which Groq's 8K tokens/min can't fit |
-| Scene plan | Groq `openai/gpt-oss-120b` | `gemini-3.5-flash-lite` | Structured output |
+| Research: pick linked articles | Groq `openai/gpt-oss-120b` | `gemini-3.5-flash-lite` | Small judgement call |
+| Scene plan (image queries) | Groq `openai/gpt-oss-120b` | `gemini-3.5-flash-lite` | Structured output |
 | Metadata + thumbnail hook | `gemini-3.8-flash` | Groq `openai/gpt-oss-120b` | Titles and hooks benefit from the stronger writer |
 | AI illustration (fallback only) | `gemini-3.1-flash-image` | — | Only when no archive image is found (§6.1) |
 
@@ -353,6 +354,7 @@ app/
   db.py            SQLAlchemy models + session
   llm.py           one interface over Gemini + Groq; routing + fallback per §5
   http.py          shared httpx client with retries
+  wikipedia.py     Wikipedia action API: page descriptions, article text, links, references
   ffmpeg.py        FFmpeg/ffprobe commands + encoder choice, shared by assemble + Shorts
   subtitles.py     ASS/SRT building from word timings, shared by assemble + Shorts
   storage.py       data/ paths (work, output, cache) + atomic writes
@@ -455,6 +457,7 @@ Then:
 | 2026-09-27 | Structure: `ogh` CLI, `app/stages/`, committed `config.yaml`, this README as the only doc. Python stays 3.11. |
 | 2026-09-27 | LLM router: stages ask for a role (writer/checker/worker/image), never a model. If any model in the chain is only rate-limited the video waits for the next run rather than failing. Cache keyed by role, so fallback answers are reused. Local caps only for Groq (1,000 req / 200K tokens per UTC day); Gemini's own 429s do the rest. |
 | 2026-09-27 | Topics: free description pre-filter before the gate; gate batched (20/call) and told history is broad (crimes, mysteries, people, inventions count if pre-2000) after a live run vetoed Lizzie Borden; pass needs relevance ≥ 6; passed topics expire after 7 days so the pool stays fresh; trend on a log scale so trending and anniversaries compete fairly. |
+| 2026-09-27 | Content: linked articles picked from the most-mentioned links by the worker LLM (lead-section links were too generic). The script marks quotes `[QUOTE]` for the quote voice. The scene text split is deterministic Python (the LLM only writes image queries), so the checked narration can't drift; scenes stretch to at most 1.25× the max rather than leave a fragment under a second long. Tests can't reach the network (tests/conftest.py). |
 | 2026-09-27 | `awaiting_review` merged into `packaged` (same meaning). Encoder output forced to limited-range 4:2:0 (`-color_range tv`): archival JPEGs are full-range and QSV otherwise tags output `yuvj420p`. |
 
 ---
@@ -468,7 +471,7 @@ Then:
 | S1 | Restructure: `ogh` CLI, `app/stages/`, committed `config.yaml`, remove old docs/scripts, YouTube API, analytics, OAuth; Quick Sync encoder; README statuses/tables | ✅ Done — the pipeline pauses at `scripted` until the check stage lands in S4 |
 | S2 | LLM routing (Gemini + Groq), model IDs in config, `llm_call` table | ✅ Done — verified live against both providers |
 | S3 | Discover (both sources), gate + relevance, rank with one video at a time | ✅ Done — verified live (1 Groq call gated 19 topics) |
-| S4 | Research (article + linked), script, check, scene plan | ⬜ |
+| S4 | Research (article + linked), script, check, scene plan | ✅ Done — verified live on Lizzie Borden (~40 s, 4 LLM calls) |
 | S5 | Images: archive chain → broader → AI → reuse, licenses | ⬜ |
 | S6 | Narration (2 voices), Whisper timing, assembly (sync, subtitles, motion, music, Quick Sync) | ⬜ |
 | S7 | Shorts, metadata, thumbnail, upload kit | ⬜ |

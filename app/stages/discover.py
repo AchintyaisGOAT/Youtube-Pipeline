@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import wikipedia
 from app.config import get_config
 from app.db import Topic
 from app.http import get_http_client, http_retry
@@ -39,12 +40,10 @@ PAGEVIEWS_URL = (
     "{day:%Y/%m/%d}"
 )
 ON_THIS_DAY_URL = "https://en.wikipedia.org/api/rest_v1/feed/onthisday/events/{day:%m}/{day:%d}"
-ACTION_API_URL = "https://en.wikipedia.org/w/api.php"
 
 #: How many of the top-viewed articles to look through for enough usable candidates.
 _TRENDING_SCAN = 200
 _ON_THIS_DAY_DAYS = 3  # today + the next two days: a video takes a while to reach upload
-_BATCH = 20  # the action API returns extracts for at most 20 titles per request
 
 _META_PREFIXES = ("Special:", "Main Page", "Wikipedia:", "Portal:", "File:", "Talk:",
                   "Category:", "Template:", "Help:", "List of", "Lists of", "Deaths in", "-")
@@ -106,47 +105,16 @@ def _fetch_on_this_day(day: date) -> list[dict]:
     return resp.json().get("events", [])
 
 
-@http_retry
-def _describe(titles: list[str]) -> dict[str, dict]:
-    """{requested title: {"title": canonical, "description": ..., "extract": ...}} for up to
-    20 titles in one request. Missing pages are left out."""
-    resp = get_http_client().get(
-        ACTION_API_URL,
-        params={
-            "action": "query", "prop": "extracts|description", "exintro": 1, "explaintext": 1,
-            "exsentences": 2, "exlimit": _BATCH, "redirects": 1, "format": "json",
-            "formatversion": 2, "titles": "|".join(titles),
-        },
-    )
-    resp.raise_for_status()
-    query = resp.json().get("query", {})
-    hops = {h["from"]: h["to"] for h in query.get("normalized", []) + query.get("redirects", [])}
-    pages = {p["title"]: p for p in query.get("pages", []) if not p.get("missing")}
-    found = {}
-    for requested in titles:
-        canonical = requested
-        while canonical in hops:
-            canonical = hops[canonical]
-        page = pages.get(canonical)
-        if page is not None:
-            found[requested] = {
-                "title": page["title"],
-                "description": page.get("description") or "",
-                "extract": page.get("extract") or "",
-            }
-    return found
-
-
 # --------------------------------------------------------------------------- #
 # sources
 # --------------------------------------------------------------------------- #
 def _trending(limit: int, known: set[str]) -> list[Topic]:
     articles = _fetch_top_articles(date.today() - timedelta(days=1))[:_TRENDING_SCAN]
     topics: list[Topic] = []
-    for start in range(0, len(articles), _BATCH):
-        chunk = articles[start : start + _BATCH]
+    for start in range(0, len(articles), wikipedia.BATCH):
+        chunk = articles[start : start + wikipedia.BATCH]
         titles = [a["article"].replace("_", " ") for a in chunk]
-        pages = _describe([t for t in titles if not t.startswith(_META_PREFIXES)])
+        pages = wikipedia.describe_pages([t for t in titles if not t.startswith(_META_PREFIXES)])
         for article, requested in zip(chunk, titles, strict=True):
             page = pages.get(requested)
             if page is None or page["title"] in known:

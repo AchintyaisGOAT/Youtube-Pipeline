@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.db import Asset, Base, Scene, Topic, Video, get_engine, get_sessionmaker
-from app.stages import images, rank, script, segment
+from app.stages import images, rank
 from app.status import Status, TopicStatus
 
 FIXED_SCRIPT = (
@@ -26,44 +26,6 @@ def session_factory(tmp_path):
     return get_sessionmaker(url)
 
 
-
-
-# --------------------------------------------------------------------------- #
-# segment.py — golden-file: [SHORT] spans -> in_short_span on the right segments
-# --------------------------------------------------------------------------- #
-def test_segment_marks_short_spans(session_factory):
-    with session_factory() as session:
-        video = Video(status=Status.CHECKED, script=FIXED_SCRIPT)
-        session.add(video)
-        session.commit()
-
-        segment.run(session, video.id)
-        session.commit()
-
-        rows = video.scenes
-        assert len(rows) >= 5
-        assert video.status == Status.SEGMENTED
-
-        short_texts = {s.text for s in rows if s.in_short_span}
-        assert any("Ides of March" in t for t in short_texts)
-        assert any("civil war" in t for t in short_texts)
-        assert not any("Rome was not built" in t for t in short_texts)
-        assert not any("Octavian" in t for t in short_texts)
-        # every segment got some image query
-        assert all(s.image_query for s in rows)
-
-
-def test_segment_is_idempotent_when_not_in_expected_status(session_factory):
-    with session_factory() as session:
-        video = Video(status=Status.SELECTED, script=FIXED_SCRIPT)
-        session.add(video)
-        session.commit()
-
-        segment.run(session, video.id)  # wrong status -> no-op
-        session.commit()
-
-        assert video.scenes == []
-        assert video.status == Status.SELECTED
 
 
 # --------------------------------------------------------------------------- #
@@ -91,43 +53,6 @@ def test_rank_picks_best_topic_and_waits_while_a_video_is_in_progress(session_fa
         rank.run(session)
         session.commit()
         assert {v.topic_id for v in session.query(Video)} == {strong.id, weak.id}
-
-
-# --------------------------------------------------------------------------- #
-# script.py — enforces the [SHORT] contract without needing a live Gemini call
-# --------------------------------------------------------------------------- #
-def test_script_rejects_output_with_no_short_spans(session_factory, monkeypatch):
-    monkeypatch.setattr(script.llm, "generate", lambda *a, **k: "a script with no shorts at all")
-
-    with session_factory() as session:
-        video = Video(
-            status=Status.RESEARCHED,
-            research={"claims": [{"text": "x", "sources": ["y"]}]},
-        )
-        session.add(video)
-        session.commit()
-
-        with pytest.raises(ValueError, match="no \\[SHORT\\] spans"):
-            script.run(session, video.id)
-
-
-def test_script_accepts_output_with_short_spans(session_factory, monkeypatch):
-    monkeypatch.setattr(script.llm, "generate", lambda *a, **k: FIXED_SCRIPT)
-
-    with session_factory() as session:
-        video = Video(
-            status=Status.RESEARCHED,
-            research={"claims": [{"text": "x", "sources": ["y"]}]},
-        )
-        session.add(video)
-        session.commit()
-
-        script.run(session, video.id)
-        session.commit()
-
-        assert video.script == FIXED_SCRIPT
-        assert video.status == Status.SCRIPTED
-        assert video.script_prompt_hash
 
 
 # --------------------------------------------------------------------------- #

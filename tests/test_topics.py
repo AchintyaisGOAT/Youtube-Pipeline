@@ -103,7 +103,7 @@ def fake_wikipedia(monkeypatch):
         ]
 
     monkeypatch.setattr(discover, "_fetch_top_articles", top_articles)
-    monkeypatch.setattr(discover, "_describe", describe)
+    monkeypatch.setattr(discover.wikipedia, "describe_pages", describe)
     monkeypatch.setattr(discover, "_fetch_on_this_day", on_this_day)
     monkeypatch.setattr(discover, "_channel_today", lambda timezone: date(2026, 9, 27))
     return calls
