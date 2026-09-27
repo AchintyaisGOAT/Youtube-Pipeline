@@ -58,11 +58,13 @@ video:                          # README §6.4
   encoder: "auto"               # auto = h264_qsv if it works, else libx264
 
 images:                         # README §6.1
-  sources: ["wikimedia_commons", "library_of_congress", "smithsonian"]
+  sources: ["wikimedia_commons", "smithsonian"]   # Smithsonian needs SMITHSONIAN_API_KEY
   ai_fallback: true             # false = never generate AI images
-  ai_style: >-
+  ai_max_per_video: 20          # beyond this, scenes reuse images instead
+  ai_style: >-                  # a live test drew two framed panels and a word, hence the last line
     Vintage historical illustration in the style of a period engraving or print, muted
-    colors, fine linework, 16:9 widescreen, no text.
+    colors, fine linework. One single full-frame scene filling the whole 16:9 widescreen
+    image: no border, no frame, no panels, no text or lettering.
   max_images: 80
 
 voice:                          # README §6.2 — verify IDs against the kokoro-onnx voice list

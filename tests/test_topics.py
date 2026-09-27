@@ -11,10 +11,10 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from app import orchestrator
-from app.db import Base, Topic, get_engine, get_sessionmaker
+from app.db import Base, Topic, Video, get_engine, get_sessionmaker
 from app.quota import RetryLater
 from app.stages import discover, gate, rank
-from app.status import TopicStatus
+from app.status import Status, TopicStatus
 
 
 @pytest.fixture
@@ -65,6 +65,30 @@ def test_trend_score_is_log_scaled():
 def test_rank_score_adds_trend_and_relevance():
     assert rank.score(Topic(raw={"trend": 0.5, "relevance": 8})) == pytest.approx(1.3)
     assert rank.score(Topic(raw=None)) == 0.0
+
+
+def test_rank_picks_best_topic_and_waits_while_a_video_is_in_progress(session_factory):
+    with session_factory() as session:
+        weak = Topic(source="s", title="A", status=TopicStatus.PASSED, raw={"trend": 0.2, "relevance": 5})
+        strong = Topic(source="s", title="B", status=TopicStatus.PASSED, raw={"trend": 1.0, "relevance": 9})
+        session.add_all([weak, strong])
+        session.commit()
+
+        rank.run(session)
+        session.commit()
+        videos = session.query(Video).all()
+        assert [v.topic_id for v in videos] == [strong.id]
+        assert strong.status == TopicStatus.USED
+
+        rank.run(session)  # the first video is still in progress -> nothing new starts
+        session.commit()
+        assert session.query(Video).count() == 1
+
+        videos[0].status = Status.APPROVED  # handed over to you -> next one may start
+        session.commit()
+        rank.run(session)
+        session.commit()
+        assert {v.topic_id for v in session.query(Video)} == {strong.id, weak.id}
 
 
 # --------------------------------------------------------------------------- #

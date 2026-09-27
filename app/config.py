@@ -144,16 +144,21 @@ class Video(_Model):
 
 
 class Images(_Model):
-    sources: list[Literal["wikimedia_commons", "library_of_congress", "smithsonian"]] = Field(
-        default_factory=lambda: ["wikimedia_commons", "library_of_congress", "smithsonian"]
+    #: Searched in this order (README §6.1). Smithsonian is skipped without an API key.
+    sources: list[Literal["wikimedia_commons", "smithsonian"]] = Field(
+        default_factory=lambda: ["wikimedia_commons", "smithsonian"]
     )
     #: README §6.1 step 3 — set false to never generate AI images.
     ai_fallback: bool = True
+    #: Most AI illustrations one video may use; beyond it, scenes reuse images. Keeps a
+    #: topic the archives barely cover from spending the whole image quota.
+    ai_max_per_video: int = Field(20, ge=0, le=500)
     #: Prepended to every AI illustration prompt; keeps AI scenes consistent with each
     #: other and close to the archival material around them. Never photorealistic.
     ai_style: str = (
         "Vintage historical illustration in the style of a period engraving or print, "
-        "muted colors, fine linework, 16:9 widescreen, no text."
+        "muted colors, fine linework. One single full-frame scene filling the whole 16:9 "
+        "widescreen image: no border, no frame, no panels, no text or lettering."
     )
     max_images: int = Field(80, ge=1, le=500)
 

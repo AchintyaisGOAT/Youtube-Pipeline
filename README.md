@@ -79,7 +79,7 @@ These drive every choice below. If one changes, revisit the stack.
 | LLMs (cloud) | **Gemini** via `google-genai`; **Groq** via the `openai` SDK (OpenAI-compatible endpoint) | Routing per step in §5. Model IDs live in config, never in code. |
 | Topics (cloud) | Wikimedia Pageviews API (trending) + Wikipedia "On this day" feed | Free, no key. |
 | Research (cloud) | Wikipedia article text + a few linked articles | Free, no key. These articles are the video's only source of facts. |
-| Images (cloud) | Wikimedia Commons, Library of Congress, Smithsonian Open Access, then a Gemini image model as fallback | Public domain / CC0 only for archive images. Smithsonian key optional. |
+| Images (cloud) | Wikimedia Commons, Smithsonian Open Access, then a Gemini image model as fallback | Public domain / CC0 only for archive images. Smithsonian needs a (free) key. |
 | Narration (local) | **Kokoro** via `kokoro-onnx` on CPU (`onnxruntime`) | Free, offline. |
 | Word timing (local) | **faster-whisper** `small.en`, CPU, int8 | Real per-word timestamps for subtitle highlighting and Shorts cut points. |
 | Video (local) | **FFmpeg**, called directly (no wrapper library) | Encoder `h264_qsv`, falling back to `libx264`. |
@@ -220,7 +220,10 @@ table.
 
 ### 6.1 Images
 
-1. **Archives first**, in this order: Wikimedia Commons → Library of Congress → Smithsonian Open Access.
+1. **Archives first**, in this order: Wikimedia Commons → Smithsonian Open Access (only with `SMITHSONIAN_API_KEY`).
+   A result must be relevant: its title shares at least two words with the scene's query (the whole
+   phrase, for topic-level queries), and its long side is at least 600 px. Real photographs of dead
+   bodies (crime scenes, autopsies, executions) are never used; the narration can still tell what happened.
    These must be **public domain / CC0 only**. Each image's source URL, author and license are saved
    and credited in the upload kit.
 2. **No match:** retry with broader, topic-level search terms.
@@ -233,7 +236,9 @@ table.
 A video never stalls on a missing image. AI can be switched off entirely in config.
 
 Other rules:
-- At most ~80 unique images per video; beyond that, images are reused.
+- At most 80 unique images and 20 AI illustrations per video (`images.max_images`,
+  `images.ai_max_per_video`); beyond that, scenes reuse images. The same image is never picked
+  twice in one video while unused results remain (a `.tif` and a `.jpg` of one scan count as one).
 - Downloaded images are cached in `data/cache/` and reused across videos.
 
 ### 6.2 Narration
@@ -426,6 +431,7 @@ Then:
 | OpenRouter / Cerebras / Mistral as main LLM | Not needed at this volume; OpenRouter free is 50 req/day; Mistral free needs a training opt-in |
 | Local LLM | Too slow on this CPU |
 | AI images as the *primary* visual source | Archives first; AI is only a fallback (§6.1) |
+| Library of Congress API | Since 2026-09 it answers every non-browser client with a Cloudflare challenge (403). Getting past it would mean evading bot protection. Much of its public-domain photography is on Commons. |
 | Photorealistic AI images | Could pass as fake historical photos |
 | YouTube Data API upload + Analytics API | Private-only lock, audit, 7-day token expiry in Testing mode (§7) |
 | Edge TTS | Unofficial service that could break; Kokoro is good and offline |
@@ -459,6 +465,7 @@ Then:
 | 2026-09-27 | Topics: free description pre-filter before the gate; gate batched (20/call) and told history is broad (crimes, mysteries, people, inventions count if pre-2000) after a live run vetoed Lizzie Borden; pass needs relevance ≥ 6; passed topics expire after 7 days so the pool stays fresh; trend on a log scale so trending and anniversaries compete fairly. |
 | 2026-09-27 | Content: linked articles picked from the most-mentioned links by the worker LLM (lead-section links were too generic). The script marks quotes `[QUOTE]` for the quote voice. The scene text split is deterministic Python (the LLM only writes image queries), so the checked narration can't drift; scenes stretch to at most 1.25× the max rather than leave a fragment under a second long. Tests can't reach the network (tests/conftest.py). |
 | 2026-09-27 | Check returns only the sentences it changes ({original, replacement, reason}); code applies them, so nothing changes unrecorded, and edits that can't be found, change nothing, or break markup are rejected. Checker model chosen by test: 4 false facts planted in a real script (wrong year, inflated number, wrong person, invented sentence). 3.5-flash-lite, 3.5-flash and 3.7-flash all caught 4/4, but only **3.5-flash** also caught the writer's real embellishments (e.g. "Lizzie bought a mansion" when Wikipedia says the sisters moved in), verified against the article. Trade-off: stricter edits, slightly flatter tone, ~50 s per check. |
+| 2026-09-27 | Images: Library of Congress dropped (Cloudflare 403). Live runs led to a title relevance check (Commons search matched theatre plans to "Andrew Borden on sofa"), exact-phrase topic queries, a 600 px floor (800 lost the real period portraits), a graphic filter (a murder victim's crime-scene photo was picked), and a cap of 20 AI illustrations per video to protect the image quota. The AI style asks for one full-frame scene with no border, panels or text. |
 | 2026-09-27 | `awaiting_review` merged into `packaged` (same meaning). Encoder output forced to limited-range 4:2:0 (`-color_range tv`): archival JPEGs are full-range and QSV otherwise tags output `yuvj420p`. |
 
 ---
@@ -473,7 +480,7 @@ Then:
 | S2 | LLM routing (Gemini + Groq), model IDs in config, `llm_call` table | ✅ Done — verified live against both providers |
 | S3 | Discover (both sources), gate + relevance, rank with one video at a time | ✅ Done — verified live (1 Groq call gated 19 topics) |
 | S4 | Research (article + linked), script, check, scene plan | ✅ Done — verified live on Lizzie Borden (~40 s, 4 LLM calls) |
-| S5 | Images: archive chain → broader → AI → reuse, licenses | ⬜ |
+| S5 | Images: archive chain → broader → AI → reuse, licenses | ✅ Done — verified live on Lizzie Borden (55 scenes in ~50 s) |
 | S6 | Narration (2 voices), Whisper timing, assembly (sync, subtitles, motion, music, Quick Sync) | ⬜ |
 | S7 | Shorts, metadata, thumbnail, upload kit | ⬜ |
 | S8 | `ogh review`, cleanup, `ogh doctor` | ⬜ |
