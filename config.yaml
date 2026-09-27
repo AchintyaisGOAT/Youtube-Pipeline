@@ -32,7 +32,7 @@ discovery:                      # README §4.1 — runs when no passed topic is 
 llm:                            # README §5 — confirm IDs/limits in AI Studio + Groq console
   writer: "gemini-3.8-flash"    # script + metadata
   writer_fallback: "openai/gpt-oss-120b"
-  checker: "gemini-3.5-flash-lite"  # script vs articles; must differ from writer
+  checker: "gemini-3.5-flash"   # script vs articles; must differ from writer (see README §12)
   worker: "openai/gpt-oss-120b" # gate + scene plan
   worker_fallback: "gemini-3.5-flash-lite"
   image: "gemini-3.1-flash-image"   # AI illustration fallback only

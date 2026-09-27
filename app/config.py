@@ -90,7 +90,7 @@ class Llm(_Model):
 
     writer: str = "gemini-3.8-flash"
     writer_fallback: str = "openai/gpt-oss-120b"
-    checker: str = "gemini-3.5-flash-lite"
+    checker: str = "gemini-3.5-flash"
     worker: str = "openai/gpt-oss-120b"
     worker_fallback: str = "gemini-3.5-flash-lite"
     image: str = "gemini-3.1-flash-image"

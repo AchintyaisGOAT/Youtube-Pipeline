@@ -158,14 +158,15 @@ def test_script_rejects_output_without_short_spans(session_factory, monkeypatch)
 # --------------------------------------------------------------------------- #
 # check
 # --------------------------------------------------------------------------- #
-def test_check_replaces_script_and_records_changes(session_factory, monkeypatch):
-    fixed = SCRIPT.replace("[QUOTE]Et tu, Brute?[/QUOTE]", "")
-    change = {"original": "Et tu, Brute?", "action": "removed", "reason": "not quoted in the article"}
+def test_check_applies_only_listed_changes_and_records_them(session_factory, monkeypatch):
+    fix = {"original": "Octavian would go on to become Rome's first emperor.",
+           "replacement": "Octavian would later rule as Augustus.", "reason": "material names him Augustus"}
+    remove_quote = {"original": "[QUOTE]Et tu, Brute?[/QUOTE]", "replacement": "", "reason": "not quoted"}
     seen = {}
 
     def fake_generate(session, prompt, **kwargs):
         seen.update(kwargs)
-        return {"script": fixed, "changes": [change, "junk"]}
+        return {"changes": [fix, remove_quote, "junk"]}
 
     monkeypatch.setattr(check.llm, "generate", fake_generate)
     with session_factory() as session:
@@ -173,15 +174,44 @@ def test_check_replaces_script_and_records_changes(session_factory, monkeypatch)
         check.run(session, video.id)
         session.commit()
 
+        expected = SCRIPT.replace(fix["original"], fix["replacement"]).replace("[QUOTE]Et tu, Brute?[/QUOTE]", "")
         assert video.status == Status.CHECKED
-        assert video.script == fixed
-        assert video.research["check"]["changes"] == [change]
+        assert video.script == expected.replace("  ", " ").strip()
+        assert [c["original"] for c in video.research["check"]["applied"]] == [fix["original"], remove_quote["original"]]
         assert video.research["articles"] == ARTICLES["articles"]
         assert seen["role"] == "checker"
 
 
-def test_check_refuses_a_mangled_script(session_factory, monkeypatch):
-    monkeypatch.setattr(check.llm, "generate", lambda *a, **k: {"script": "[SHORT]Tiny.[/SHORT]", "changes": []})
+def test_check_rejects_unfindable_noop_and_markup_breaking_changes():
+    changes = [
+        {"original": "A sentence the writer never wrote.", "replacement": "x", "reason": "r"},
+        {"original": "Rome was not built in a day.", "replacement": "Rome was not built in a day.", "reason": "r"},
+        {"original": "for good.[/SHORT]", "replacement": "for good.", "reason": "r"},  # drops a closing tag
+    ]
+    checked, applied, rejected = check.apply_changes(SCRIPT, changes)
+
+    assert checked == SCRIPT
+    assert applied == []
+    assert [r["why"].split(":")[0] for r in rejected] == [
+        "original sentence not found in the script", "no actual change", "would break markup",
+    ]
+
+
+def test_check_with_no_changes_keeps_the_script(session_factory, monkeypatch):
+    monkeypatch.setattr(check.llm, "generate", lambda *a, **k: {"changes": []})
+    with session_factory() as session:
+        video = _video(session, Status.SCRIPTED, research=ARTICLES, script=SCRIPT)
+        check.run(session, video.id)
+        assert video.script == SCRIPT
+        assert video.research["check"]["applied"] == []
+
+
+def test_check_refuses_to_gut_the_script(session_factory, monkeypatch):
+    sentences = ["Rome was not built in a day.", "The senate had hoped his death would restore the republic.",
+                 "Octavian would go on to become Rome's first emperor."]
+    changes = [{"original": s, "replacement": "", "reason": "r"} for s in sentences]
+    changes.append({"original": "[QUOTE]Et tu, Brute?[/QUOTE]", "replacement": "", "reason": "r"})
+    monkeypatch.setattr(check.llm, "generate", lambda *a, **k: {"changes": changes})
     with session_factory() as session:
         video = _video(session, Status.SCRIPTED, research=ARTICLES, script=SCRIPT)
         with pytest.raises(ValueError, match="cut the script"):

@@ -185,7 +185,7 @@ All free tiers. Model IDs are set in `config.yaml`, so a model can be swapped wi
 | Gate + relevance | Groq `openai/gpt-oss-120b` | `gemini-3.5-flash-lite` | High daily limit, simple classification; all candidates in one call |
 | Research | *No LLM*: Wikipedia article text | — | Free, unlimited and trusted; its references become the source list |
 | Script | `gemini-3.8-flash` | Groq `openai/gpt-oss-120b` | Best free writing quality; reads all the articles (1M context) |
-| Check | `gemini-3.5-flash-lite` | — | Must differ from the writer; reads all the articles, which Groq's 8K tokens/min can't fit |
+| Check | `gemini-3.5-flash` | — | Must differ from the writer; reads all the articles (~11K tokens), which Groq's 8K tokens/min can't fit. Chosen by test (§12) |
 | Research: pick linked articles | Groq `openai/gpt-oss-120b` | `gemini-3.5-flash-lite` | Small judgement call |
 | Scene plan (image queries) | Groq `openai/gpt-oss-120b` | `gemini-3.5-flash-lite` | Structured output |
 | Metadata + thumbnail hook | `gemini-3.8-flash` | Groq `openai/gpt-oss-120b` | Titles and hooks benefit from the stronger writer |
@@ -458,6 +458,7 @@ Then:
 | 2026-09-27 | LLM router: stages ask for a role (writer/checker/worker/image), never a model. If any model in the chain is only rate-limited the video waits for the next run rather than failing. Cache keyed by role, so fallback answers are reused. Local caps only for Groq (1,000 req / 200K tokens per UTC day); Gemini's own 429s do the rest. |
 | 2026-09-27 | Topics: free description pre-filter before the gate; gate batched (20/call) and told history is broad (crimes, mysteries, people, inventions count if pre-2000) after a live run vetoed Lizzie Borden; pass needs relevance ≥ 6; passed topics expire after 7 days so the pool stays fresh; trend on a log scale so trending and anniversaries compete fairly. |
 | 2026-09-27 | Content: linked articles picked from the most-mentioned links by the worker LLM (lead-section links were too generic). The script marks quotes `[QUOTE]` for the quote voice. The scene text split is deterministic Python (the LLM only writes image queries), so the checked narration can't drift; scenes stretch to at most 1.25× the max rather than leave a fragment under a second long. Tests can't reach the network (tests/conftest.py). |
+| 2026-09-27 | Check returns only the sentences it changes ({original, replacement, reason}); code applies them, so nothing changes unrecorded, and edits that can't be found, change nothing, or break markup are rejected. Checker model chosen by test: 4 false facts planted in a real script (wrong year, inflated number, wrong person, invented sentence). 3.5-flash-lite, 3.5-flash and 3.7-flash all caught 4/4, but only **3.5-flash** also caught the writer's real embellishments (e.g. "Lizzie bought a mansion" when Wikipedia says the sisters moved in), verified against the article. Trade-off: stricter edits, slightly flatter tone, ~50 s per check. |
 | 2026-09-27 | `awaiting_review` merged into `packaged` (same meaning). Encoder output forced to limited-range 4:2:0 (`-color_range tv`): archival JPEGs are full-range and QSV otherwise tags output `yuvj420p`. |
 
 ---
