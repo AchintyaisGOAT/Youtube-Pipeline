@@ -250,8 +250,8 @@ def test_unpunctuated_long_sentence_is_cut_near_the_middle():
 
 def test_segment_run_stores_scenes_with_llm_queries(session_factory, monkeypatch):
     def fake_generate(session, prompt, **kwargs):
-        count = prompt.count("\n") and len([ln for ln in prompt.splitlines() if ln[:1].isdigit()])
-        return {"queries": [{"id": i, "query": f"query {i}"} for i in range(1, count)]}  # last one missing
+        count = len(prompt.split("Scenes:\n")[1].split("\n\n")[0].splitlines())
+        return {"scenes": [{"id": i, "query": f"query {i}"} for i in range(1, count)]}  # last one missing
 
     monkeypatch.setattr(segment.llm, "generate", fake_generate)
     with session_factory() as session:
@@ -267,7 +267,7 @@ def test_segment_run_stores_scenes_with_llm_queries(session_factory, monkeypatch
 
 
 def test_segment_rerun_replaces_scenes(session_factory, monkeypatch):
-    monkeypatch.setattr(segment.llm, "generate", lambda *a, **k: {"queries": []})
+    monkeypatch.setattr(segment.llm, "generate", lambda *a, **k: {"scenes": []})
     with session_factory() as session:
         video = _video(session, Status.CHECKED, script=SCRIPT)
         segment.run(session, video.id)

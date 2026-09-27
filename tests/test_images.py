@@ -252,6 +252,21 @@ def test_a_broken_archive_is_skipped_and_downloads_are_not_repeated(session_fact
         assert _sources(session, second) == ["one.jpg"]
 
 
+def test_an_unexpected_ai_error_on_one_scene_falls_back_to_reuse(session_factory, archive, monkeypatch):
+    results, _ = archive
+    results["alpha"] = ["a.jpg"]
+
+    def flaky(session, prompt):
+        raise ConnectionResetError("server disconnected")
+
+    monkeypatch.setattr(images.llm, "generate_image", flaky)
+    with session_factory() as session:
+        video = _video(session, ["alpha", "zulu"])
+        images.run(session, video.id)  # must not crash the stage
+        session.commit()
+        assert _sources(session, video) == ["a.jpg", "a.jpg"]
+
+
 def test_waits_when_nothing_can_be_placed_yet(session_factory, archive, monkeypatch):
     def spent(session, prompt):
         raise RetryLater("image quota spent")

@@ -9,6 +9,10 @@ shared by the long-form render and the Shorts (README §6.4).
   the old `size: 34` rendered ~127 px tall at 1080p.
 - Quote words are italic.
 - `window` cuts out one time range (a Short) and shifts it to start at 0.
+- `overlays` adds the on-screen text planned per scene (README §6.5), in the upper part
+  of the frame so it never collides with the captions: a place/date **label** (top-left,
+  on a dark box), a **number** callout (top-centre, large, in the highlight colour, with a
+  small pop) and a **chapter** card (centred, large). All fade in and out.
 """
 
 from __future__ import annotations
@@ -81,6 +85,38 @@ def _render(words: list[dict], highlight: int | None, color_tag: str) -> str:
     return " ".join(parts)
 
 
+def overlay_times(kind: str, scene_start: float, scene_end: float) -> tuple[float, float]:
+    """When each kind of on-screen text shows within its scene."""
+    lead, length = {"chapter": (0.0, 2.4), "label": (0.25, 3.2), "number": (0.4, 2.6)}[kind]
+    start = min(scene_start + lead, scene_end)
+    return start, min(start + length, scene_end)
+
+
+def _overlay_styles(ass: pysubs2.SSAFile, family: str, size: int, width: int, height: int,
+                    highlight: pysubs2.Color) -> None:
+    common = {"fontname": family, "bold": True, "primarycolor": pysubs2.Color(255, 255, 255),
+              "outlinecolor": pysubs2.Color(0, 0, 0), "shadow": 0}
+    margin_x, margin_y = round(width * 0.05), round(height * 0.06)
+    ass.styles["Label"] = pysubs2.SSAStyle(  # borderstyle 3 = opaque box drawn in the outline colour
+        **{**common, "outlinecolor": pysubs2.Color(0, 0, 0, 90)}, fontsize=round(size * 0.62), borderstyle=3,
+        outline=round(size * 0.18), backcolor=pysubs2.Color(0, 0, 0, 90),
+        alignment=pysubs2.Alignment(7), marginl=margin_x, marginr=margin_x, marginv=margin_y)
+    ass.styles["Number"] = pysubs2.SSAStyle(
+        **{**common, "primarycolor": highlight}, fontsize=round(size * 1.5), borderstyle=1,
+        outline=max(3, round(size * 0.09)), alignment=pysubs2.Alignment(8),
+        marginl=margin_x, marginr=margin_x, marginv=round(height * 0.12))
+    ass.styles["Chapter"] = pysubs2.SSAStyle(
+        **common, fontsize=round(size * 1.35), borderstyle=1, outline=max(3, round(size * 0.08)),
+        spacing=4, alignment=pysubs2.Alignment(5), marginl=margin_x, marginr=margin_x, marginv=0)
+
+
+def _overlay_text(kind: str, text: str) -> str:
+    text = _UNSAFE.sub("", text)
+    if kind == "number":
+        return f"{{\\fad(150,250)\\fscx70\\fscy70\\t(0,180,\\fscx100\\fscy100)}}{text}"
+    return f"{{\\fad(300,300)}}{text}"
+
+
 def build_subtitles(
     timeline: list[dict],
     config: ChannelConfig,
@@ -88,6 +124,7 @@ def build_subtitles(
     resolution: tuple[int, int],
     size: int,
     window: tuple[float, float] | None = None,
+    overlays: list[dict] | None = None,
 ) -> tuple[pysubs2.SSAFile, pysubs2.SSAFile]:
     """(burned-in ASS, plain SRT sidecar)."""
     subs = config.subtitles
@@ -105,9 +142,20 @@ def build_subtitles(
         marginv=round(height * (0.07 if subs.position != "center" else 0)),
     )
     ass.styles["Default"] = style
+    _overlay_styles(ass, style.fontname, size, width, height, highlight_color)
     srt = pysubs2.SSAFile()
 
     offset = window[0] if window else 0.0
+    for overlay in overlays or []:
+        start, end = overlay["start"], overlay["end"]
+        if window:
+            if not (window[0] <= start < window[1]):
+                continue
+            end = min(end, window[1])
+        ass.events.append(pysubs2.SSAEvent(
+            start=pysubs2.make_time(s=start - offset), end=pysubs2.make_time(s=end - offset),
+            style=overlay["kind"].capitalize(), text=_overlay_text(overlay["kind"], overlay["text"]),
+        ))
     groups = captions(timeline, subs.words_per_caption)
     if window:
         groups = [[w for w in g if window[0] <= w["start"] < window[1]] for g in groups]

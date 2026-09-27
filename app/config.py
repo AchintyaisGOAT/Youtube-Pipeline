@@ -206,6 +206,20 @@ class Schedule(_Model):
         return [schedule.validate(slot) for slot in v]
 
 
+class Effects(_Model):
+    """Sound effects and on-screen text (README §6.5)."""
+
+    sfx: bool = True
+    #: At most this share of scenes get a sound effect (and never two scenes in a row).
+    sfx_max_share: float = Field(0.3, ge=0, le=1)
+    #: Added to each effect's own manifest gain; effects sit under the narration.
+    sfx_volume_db: float = Field(-8.0, ge=-40, le=12)
+    overlays: bool = True
+    #: At most this share of scenes get a label/number overlay; chapter cards are capped separately.
+    overlay_max_share: float = Field(0.25, ge=0, le=1)
+    max_chapters: int = Field(6, ge=0, le=20)
+
+
 class Publish(_Model):
     category: str = "Education"
     made_for_kids: bool = False
@@ -229,6 +243,7 @@ class ChannelConfig(_Model):
     voice: Voice = Field(default_factory=Voice)
     alignment: Alignment = Field(default_factory=Alignment)
     subtitles: Subtitles = Field(default_factory=Subtitles)
+    effects: Effects = Field(default_factory=Effects)
     publish: Publish = Field(default_factory=Publish)
     ops: Ops = Field(default_factory=Ops)
 

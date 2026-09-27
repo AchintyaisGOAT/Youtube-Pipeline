@@ -11,8 +11,11 @@
 
 Audio: narration normalised to `video.loudness_lufs`; a music track from
 assets/music/manifest.yaml normalised to `video.music_lufs`, ducked while speech plays,
-looped to length; final mix normalised again. No manifest/tracks = no music. The chosen
-track is recorded in video.video_metadata["music"] for the credits.
+looped to length; each scene's sound-effect cue (assets/sfx/manifest.yaml) trimmed to the
+scene and faded; final mix normalised again. No manifest = no music / no effects. The
+track and effects used are recorded in video.video_metadata for the credits.
+
+On-screen text (labels, numbers, chapter cards) is burned in with the subtitles.
 
 Scene frame boundaries come from the cumulative scene times (round(start*fps) ..
 round(end*fps)), so rounding never accumulates and the picture stays locked to the voice.
@@ -26,18 +29,17 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import yaml
-from loguru import logger
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import ChannelConfig, get_config, get_settings
+from app import assets
+from app.config import ChannelConfig, get_config
 from app.db import Asset, Render, Scene, Video
 from app.ffmpeg import pick_encoder, probe, run_ffmpeg, video_codec_args
 from app.status import Status
 from app.storage import atomic_write_text, output_dir, work_dir
-from app.subtitles import build_subtitles, font_path
+from app.subtitles import build_subtitles, font_path, overlay_times
 
 MOTIONS = ("zoom_in", "pan_right", "zoom_out", "pan_left", "pan_down", "pan_up")
 #: How far a pan/zoom travels: 12% — slow enough to read as calm, not a whip.
@@ -102,37 +104,38 @@ def clip_filter(motion: str, frames: int, size: tuple[int, int], fps: int, image
     )
 
 
-def audio_graph(config: ChannelConfig, with_music: bool) -> str:
+def sfx_cue(scene_start: float, scene_end: float, tag: str) -> tuple[float, float]:
+    """(delay, length) for an effect: it starts with the scene — a whoosh a beat earlier,
+    so it lands on the cut — and is trimmed to the scene (plus a short tail)."""
+    delay = max(0.0, scene_start - (0.2 if tag == "whoosh" else 0.0))
+    return delay, max(0.3, min(scene_end - delay + 0.3, 6.0))
+
+
+def audio_graph(config: ChannelConfig, with_music: bool, cues: list[tuple[int, float, float, float]] = ()) -> str:
+    """Narration (input 1), optional music (input 2, ducked under speech) and sound-effect
+    cues (input index, delay s, length s, gain dB), mixed and loudness-normalised."""
     loud, music = config.video.loudness_lufs, config.video.music_lufs
     final = f"loudnorm=I={loud}:TP=-1.5:LRA=11,aresample=48000[a]"
-    if not with_music:
+    parts: list[str] = []
+    speech_copies = 2 if with_music else 1
+    parts.append(f"[1:a]loudnorm=I={loud}:TP=-1.5:LRA=11,asplit={speech_copies}"
+                 + ("[n1][n2]" if with_music else "[n2]"))
+    mix_inputs = ["[n2]"]
+    if with_music:
+        parts.append(f"[2:a]loudnorm=I={music}:TP=-2:LRA=11[m]")
+        parts.append("[m][n1]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=400[duck]")
+        mix_inputs.append("[duck]")
+    for n, (index, delay, length, gain) in enumerate(cues):
+        fade = max(0.0, length - 0.3)
+        ms = round(delay * 1000)
+        parts.append(f"[{index}:a]atrim=0:{length:.3f},afade=t=out:st={fade:.3f}:d=0.3,"
+                     f"volume={gain:.1f}dB,adelay={ms}:all=1[s{n}]")
+        mix_inputs.append(f"[s{n}]")
+    if len(mix_inputs) == 1:
         return f"[1:a]{final}"
-    return (
-        f"[1:a]loudnorm=I={loud}:TP=-1.5:LRA=11,asplit=2[n1][n2];"
-        f"[2:a]loudnorm=I={music}:TP=-2:LRA=11[m];"
-        f"[m][n1]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=400[duck];"
-        f"[n2][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{final}"
-    )
-
-
-# --------------------------------------------------------------------------- #
-# music
-# --------------------------------------------------------------------------- #
-def pick_music(video_id: uuid.UUID) -> dict | None:
-    """A track from assets/music/manifest.yaml (file, title, artist, license, credit),
-    chosen by video id so a re-render keeps the same one. None = no music."""
-    folder = Path(get_settings().assets_dir) / "music"
-    manifest = folder / "manifest.yaml"
-    if not manifest.exists():
-        return None
-    tracks = [t for t in (yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}).get("tracks", [])
-              if isinstance(t, dict) and (folder / str(t.get("file", ""))).is_file()]
-    if not tracks:
-        logger.warning("assets/music/manifest.yaml lists no existing files — rendering without music")
-        return None
-    track = dict(tracks[video_id.int % len(tracks)])
-    track["path"] = str(folder / track["file"])
-    return track
+    parts.append(f"{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:duration=first:"
+                 f"dropout_transition=0:normalize=0,{final}")
+    return ";".join(parts)
 
 
 # --------------------------------------------------------------------------- #
@@ -165,7 +168,7 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         if not needed.exists():
             raise FileNotFoundError(f"video {video_id}: {needed.name} not found in {wp}")
 
-    assets = {a.id: a for a in session.execute(
+    images = {a.id: a for a in session.execute(
         select(Asset).where(Asset.id.in_({s.image_asset_id for s in scenes}))).scalars()}
     size, fps = config.video.long_form.resolution, config.video.long_form.fps
     motions = choose_motions([s.image_asset_id for s in scenes])
@@ -175,7 +178,7 @@ def run(session: Session, video_id: uuid.UUID) -> None:
     try:
         jobs = []
         for scene, motion, n in zip(scenes, motions, frames, strict=True):
-            image = Path(assets[scene.image_asset_id].uri)
+            image = Path(images[scene.image_asset_id].uri)
             with Image.open(image) as im:
                 aspect = im.width / im.height
             jobs.append((image, wp / f"clip_{scene.idx:04d}.mp4", clip_filter(motion, n, size, fps, aspect), n))
@@ -185,21 +188,37 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         _record(session, video_id, stage, "success", log=f"{len(jobs)} clips")
 
         stage = "final"
+        overlays = [{**scene.overlay, **dict(zip(("start", "end"), overlay_times(
+                         scene.overlay["kind"], scene.start_s, scene.end_s), strict=True))}
+                    for scene in scenes if scene.overlay]
         ass, srt = build_subtitles(json.loads(words.read_text(encoding="utf-8")), config,
-                                   resolution=size, size=config.subtitles.size)
+                                   resolution=size, size=config.subtitles.size, overlays=overlays)
         ass.save(str(wp / "subtitles.ass"))
         srt.save(str(output_dir(video_id) / "final.srt"))
         font = font_path(config)
         shutil.copy2(font, wp / font.name)  # libass finds it via fontsdir=. (cwd), no drive-letter colon
 
-        music = pick_music(video_id)
+        music = assets.pick_music(video_id)
+        inputs = ["-f", "concat", "-safe", "0", "-i", "concat.txt", "-i", "narration.wav"]
+        if music:
+            inputs += ["-stream_loop", "-1", "-i", music["path"]]
+        cues, used_sfx = [], []
+        for scene in scenes if config.effects.sfx else []:
+            effect = assets.pick_sfx(scene.sfx, scene.idx) if scene.sfx else None
+            if effect is None:
+                continue
+            delay, length = sfx_cue(scene.start_s, scene.end_s, scene.sfx)
+            cues.append((inputs.count("-i"), delay, length,
+                         float(effect.get("gain_db") or 0) + config.effects.sfx_volume_db))
+            inputs += ["-i", effect["path"]]
+            used_sfx.append({k: effect.get(k) for k in ("file", "title", "credit")})
         final = output_dir(video_id) / "final.mp4"
         # Filter strings must not contain Windows paths ("C:" breaks option parsing — seen
         # live), so ffmpeg runs inside the work dir and filters use bare file names.
         run_ffmpeg([
-            "-f", "concat", "-safe", "0", "-i", "concat.txt", "-i", "narration.wav",
-            *(["-stream_loop", "-1", "-i", music["path"]] if music else []),
-            "-filter_complex", f"[0:v]ass=filename=subtitles.ass:fontsdir=.[v];{audio_graph(config, bool(music))}",
+            *inputs,
+            "-filter_complex",
+            f"[0:v]ass=filename=subtitles.ass:fontsdir=.[v];{audio_graph(config, bool(music), cues)}",
             "-map", "[v]", "-map", "[a]", *video_codec_args(config), "-c:a", "aac", "-b:a", "192k",
             "-t", f"{video.duration_s:.3f}", "-movflags", "+faststart", str(final),
         ], cwd=wp)
@@ -211,7 +230,10 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         _record(session, video_id, stage, "failed", log=str(exc)[-4000:])
         raise
 
+    metadata = dict(video.video_metadata or {})
     if music:
-        video.video_metadata = {**(video.video_metadata or {}),
-                                "music": {k: music.get(k) for k in ("file", "title", "artist", "license", "credit")}}
+        metadata["music"] = {k: music.get(k) for k in ("file", "title", "artist", "license", "credit")}
+    if used_sfx:
+        metadata["sfx"] = used_sfx  # for credits, if any effect's license asks for one
+    video.video_metadata = metadata or None
     video.status = Status.ASSEMBLED

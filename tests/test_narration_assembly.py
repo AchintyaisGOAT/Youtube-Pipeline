@@ -13,6 +13,7 @@ import pytest
 import soundfile as sf
 from PIL import Image
 
+from app import assets
 from app.config import get_config
 from app.db import Asset, Base, Scene, Short, Video, get_engine, get_sessionmaker
 from app.stages import align, assemble, narrate
@@ -197,8 +198,8 @@ def test_pick_music_reads_the_manifest(tmp_path, monkeypatch):
     (music / "manifest.yaml").write_text(
         "tracks:\n  - {file: calm.mp3, title: Calm, artist: Someone, license: no attribution required}\n"
         "  - {file: missing.mp3, title: Gone}\n", encoding="utf-8")
-    monkeypatch.setattr(assemble, "get_settings", lambda: type("S", (), {"assets_dir": str(tmp_path / "assets")}))
-    track = assemble.pick_music(uuid.uuid4())
+    monkeypatch.setattr(assets, "get_settings", lambda: type("S", (), {"assets_dir": str(tmp_path / "assets")}))
+    track = assets.pick_music(uuid.uuid4())
     assert track["title"] == "Calm" and track["path"].endswith("calm.mp3")
 
 
@@ -229,7 +230,7 @@ def test_assemble_renders_a_synced_video(session_factory, monkeypatch, tmp_path,
         sf.write(tmp_path / "music.wav", 0.2 * np.sin(2 * math.pi * 440 * np.arange(rate) / rate), rate)
         music = {"file": "music.wav", "title": "Tone", "artist": "Test", "license": "cc0", "credit": "",
                  "path": str(tmp_path / "music.wav")}
-    monkeypatch.setattr(assemble, "pick_music", lambda video_id: music)
+    monkeypatch.setattr(assemble.assets, "pick_music", lambda video_id: music)
 
     with session_factory() as session:
         wide = Asset(kind="image", source="t", source_id="wide", uri=str(tmp_path / "wide.jpg"))

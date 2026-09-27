@@ -169,6 +169,7 @@ redo it from there.
 ```powershell
 uv run ogh run       # advance everything as far as possible (--discover: look for topics now)
 uv run ogh review    # review finished videos: approve / reject / send back / pick title / mark uploaded
+uv run ogh assets    # after adding music/sound effects: write their manifest.yaml files
 uv run ogh doctor    # green/red health check of config, keys, DB, FFmpeg + encoder, disk
                      # (--live: also confirm the keys work and every model ID in config exists)
 ```
@@ -253,9 +254,9 @@ Other rules:
   YouTube use and safe from Content ID claims.
 - Not Pixabay or similar: their tracks sometimes get claimed by uploaders who registered them with
   Content ID.
-- The library has no API. Download 15–30 tracks once into `assets/music/` and list each in
-  `assets/music/manifest.yaml` (file, title, artist, license). If a track needing credit is ever used,
-  its credit goes into the description automatically.
+- The library has no API. Download 15–30 tracks once into `assets/music/`, then run
+  `uv run ogh assets`: it writes `assets/music/manifest.yaml` (file, title, artist, license, credit)
+  for you. If a track needing credit is ever used, its credit goes into the description automatically.
 - Music sits at −18 LUFS under narration and is lowered further while speech plays. The final mix is
   −14 LUFS. If `assets/music/` is empty, videos render without music.
 
@@ -274,7 +275,34 @@ after it, so images never drift out of sync with the voice.
 
 Fonts: `assets/fonts/*.ttf` from Google Fonts (e.g. Inter). Branding: `assets/branding/logo.png`.
 
-### 6.5 Thumbnail
+### 6.5 Sound effects & on-screen text
+
+Both are planned in the same scene-plan LLM call as the image queries (§4.1 step 7), then
+checked by code before anything is rendered.
+
+**Sound effects** come from your own library, the same routine as music:
+1. In YouTube Studio → Audio Library → **Sound effects**, download 30–50 effects (whooshes and
+   impacts matter most; add ambience like crowd, bells, thunder, typewriter, paper, footsteps).
+2. Put them in `assets/sfx/` and run `uv run ogh assets`. It writes `assets/sfx/manifest.yaml`,
+   guessing each effect's tag from its file name ("Whoosh Swish.mp3" → `whoosh`) and listing any it
+   couldn't tag, for you to fill in. Tags: whoosh, impact, riser, crowd, typewriter, clock, thunder,
+   rain, bell, door, footsteps, paper, camera, gunshot, horse, fire, water, wind, train, sword.
+3. The scene plan may only use tags your library has; ambient effects (bell, crowd, thunder,
+   door, paper…) only where the scene's narration mentions that thing. Every chapter card also
+   gets a whoosh and every number callout an impact. At most 30% of scenes get an effect, never
+   two in a row. Each plays as its scene starts (a whoosh a beat early, so it lands on the cut),
+   trimmed to the scene and faded, at −8 dB under the narration (`effects.*` in config).
+
+**On-screen text**, in the upper part of the frame, clear of the subtitles, fading in and out:
+- **label**: a new place or date, top-left on a dark box, e.g. "FALL RIVER, MASSACHUSETTS · 1892".
+- **number**: one striking figure, large, top-centre, in the highlight colour, e.g. "$300,000".
+- **chapter**: a 2–5 word title card at the start of each part of the story, e.g. "THE TRIAL" (max 6).
+
+At most 25% of scenes get a label or number. **No overlay may state what the video can't back
+up:** every number must appear in the scene's narration or the researched articles, and every word
+of a label in the narration, the articles or the title. Anything else is dropped.
+
+### 6.6 Thumbnail
 
 - The most striking image from the video.
 - A 2–4 word hook written by the LLM (not just the first words of the title), in bold outlined text.
@@ -367,6 +395,7 @@ app/
   quota.py         daily usage counters; RetryLater / QuotaExceeded
   notify.py        optional failure alert to ALERT_URL
   status.py        the status vocabulary in §4.2
+  assets.py        music + sound-effect manifests (`ogh assets`), track/effect picking
   stages/          one module per stage in §4.1, each with the same run(...) interface
 prompts/           one template per LLM step in §5
 tests/
@@ -399,7 +428,8 @@ uv run ogh doctor                   # everything green before the first run
 ```
 
 Then:
-1. Download music into `assets/music/` (§6.3) and a font into `assets/fonts/`.
+1. Download music into `assets/music/` (§6.3), sound effects into `assets/sfx/` (§6.5), a font
+   into `assets/fonts/`, then run `uv run ogh assets`.
 2. Create the YouTube channel.
 3. For the first few runs, watch every video fully in review before uploading.
 
@@ -468,6 +498,7 @@ Then:
 | 2026-09-27 | Check returns only the sentences it changes ({original, replacement, reason}); code applies them, so nothing changes unrecorded, and edits that can't be found, change nothing, or break markup are rejected. Checker model chosen by test: 4 false facts planted in a real script (wrong year, inflated number, wrong person, invented sentence). 3.5-flash-lite, 3.5-flash and 3.7-flash all caught 4/4, but only **3.5-flash** also caught the writer's real embellishments (e.g. "Lizzie bought a mansion" when Wikipedia says the sisters moved in), verified against the article. Trade-off: stricter edits, slightly flatter tone, ~50 s per check. |
 | 2026-09-27 | Images: Library of Congress dropped (Cloudflare 403). Live runs led to a title relevance check (Commons search matched theatre plans to "Andrew Borden on sofa"), exact-phrase topic queries, a 600 px floor (800 lost the real period portraits), a graphic filter (a murder victim's crime-scene photo was picked), and a cap of 20 AI illustrations per video to protect the image quota. The AI style asks for one full-frame scene with no border, panels or text. |
 | 2026-09-27 | Narration is synthesised per scene and each scene's time is measured from the audio, pause included, so the pictures can't drift from the voice; Emma reads `[QUOTE]` text. Whisper only places words inside a scene (the script's own words are displayed), so a mismatch can't spread. The subtitle canvas matches the video resolution, so sizes are real pixels. Clips render in parallel, then one final pass does subtitles + music ducking + loudness. |
+| 2026-09-27 | After the first render felt flat: sound effects (from your YouTube Audio Library downloads, tagged via `ogh assets`) and on-screen text (place/date labels, number callouts, chapter cards), planned in the existing scene-plan call. Code enforces sparsity (effects ≤ 30% of scenes, never consecutive; labels/numbers ≤ 25%; ≤ 6 chapters) and rejects any overlay whose numbers or names the narration/sources don't contain. Scene length stays 5–7 s. |
 | 2026-09-27 | `awaiting_review` merged into `packaged` (same meaning). Encoder output forced to limited-range 4:2:0 (`-color_range tv`): archival JPEGs are full-range and QSV otherwise tags output `yuvj420p`. |
 
 ---
@@ -484,5 +515,6 @@ Then:
 | S4 | Research (article + linked), script, check, scene plan | ✅ Done — verified live on Lizzie Borden (~40 s, 4 LLM calls) |
 | S5 | Images: archive chain → broader → AI → reuse, licenses | ✅ Done — verified live on Lizzie Borden (55 scenes in ~50 s) |
 | S6 | Narration (2 voices), Whisper timing, assembly (sync, subtitles, motion, music, Quick Sync) | ✅ Done — verified live: 7:54 Lizzie Borden video; narration 2.7 min, timing ~9 min (incl. one-time model download), render 92 s; −14.5 LUFS, locked sync |
+| S6b | Sound effects + on-screen text (labels, numbers, chapter cards), `ogh assets` | ✅ Done — see §12 |
 | S7 | Shorts, metadata, thumbnail, upload kit | ⬜ |
 | S8 | `ogh review`, cleanup (incl. deleting cached images no video has used for 90 days), `data/logs/`, `ogh doctor` | ⬜ |

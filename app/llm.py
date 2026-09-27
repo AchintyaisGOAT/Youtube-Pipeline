@@ -77,10 +77,13 @@ def _is_transient(exc: BaseException) -> bool:
     that a newly launched Flash model can 503 for minutes under load. A 429
     (RESOURCE_EXHAUSTED) is a "slow down" too — Google's response carries a retryDelay.
     A 404/400/403 (retired model, bad request, access denied) is NOT transient and must
-    fail fast rather than be retried for minutes."""
+    fail fast rather than be retried for minutes. A dropped connection or timeout (httpx
+    transport error — seen live: "Server disconnected without sending a response") is a
+    network blip, not a failure of the video."""
+    import httpx
     from google.genai import errors as genai_errors
 
-    if isinstance(exc, genai_errors.ServerError):
+    if isinstance(exc, genai_errors.ServerError | httpx.TransportError):
         return True
     return isinstance(exc, genai_errors.ClientError) and getattr(exc, "code", None) == 429
 

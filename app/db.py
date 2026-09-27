@@ -141,6 +141,10 @@ class Scene(Base):
     start_s: Mapped[float | None] = mapped_column(Float)
     end_s: Mapped[float | None] = mapped_column(Float)
     in_short_span: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: A sound-effect tag from assets/sfx/manifest.yaml played at the scene start, or None.
+    sfx: Mapped[str | None] = mapped_column(String(40))
+    #: On-screen text: {"kind": "label" | "number" | "chapter", "text": str}, or None.
+    overlay: Mapped[dict | None] = mapped_column(JSON)
 
     video: Mapped[Video] = relationship(back_populates="scenes")
 

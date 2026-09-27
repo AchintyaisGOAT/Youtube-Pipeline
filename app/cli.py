@@ -3,6 +3,7 @@
     uv run ogh run [--discover]   advance everything as far as possible
     uv run ogh review             review packaged videos
     uv run ogh doctor [--live]    green/red health check (--live: keys + model IDs online)
+    uv run ogh assets             write/update the music + sound-effect manifests
 
 `review` owns its own session/commit because a human, not the orchestrator, drives it.
 Send-back, title picking and mark-uploaded arrive in S8.
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from sqlalchemy import select, text
 
-from app import llm, orchestrator
+from app import assets, llm, orchestrator
 from app.config import get_config, get_settings
 from app.db import Base, Short, Video, get_engine, session_scope
 from app.ffmpeg import pick_encoder
@@ -187,6 +188,25 @@ def doctor(*, live: bool = False) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# assets
+# --------------------------------------------------------------------------- #
+def assets_cmd() -> int:
+    """Write/update assets/music and assets/sfx manifest.yaml from the files present."""
+    report = assets.write_manifests()
+    root = Path(get_settings().assets_dir)
+    print(f"music tracks: {len(assets.music_tracks())}  (new: {len(report['music'])})")
+    print(f"sound effects: {len(assets.sound_effects())} usable  (new: {len(report['sfx'])})")
+    print(f"effect tags available to the scene plan: {', '.join(assets.sfx_tags()) or 'none'}")
+    if report["untagged"]:
+        print()
+        print(f"{len(report['untagged'])} effect(s) have no tag yet — edit {root / 'sfx' / 'manifest.yaml'}")
+        print("and give each a tag from: " + ", ".join(assets.SFX_TAGS))
+        for name in report["untagged"]:
+            print(f"  - {name}")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # entry point
 # --------------------------------------------------------------------------- #
 def main(argv: list[str] | None = None) -> int:
@@ -197,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         "--discover", action="store_true", help="look for new topics even if some are waiting"
     )
     commands.add_parser("review", help="review packaged videos")
+    commands.add_parser("assets", help="write/update the music and sound-effect manifests")
     doctor_parser = commands.add_parser("doctor", help="green/red health check")
     doctor_parser.add_argument(
         "--live", action="store_true", help="also check the API keys and model IDs online"
@@ -205,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return doctor(live=args.live)
+    if args.command == "assets":
+        return assets_cmd()
 
     get_config()  # fail fast on a bad config.yaml, before touching anything
     Base.metadata.create_all(get_engine())

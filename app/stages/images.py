@@ -347,7 +347,7 @@ def run(session: Session, video_id: uuid.UUID) -> None:
                 except RetryLater as exc:
                     logger.warning("AI illustrations unavailable for the rest of this run: {}", exc)
                     ai_available = False
-                except ValueError as exc:
+                except Exception as exc:  # no image returned, or anything unexpected: reuse instead
                     logger.warning("no AI illustration for scene {}: {}", scene.idx, exc)
             asset_id = asset.id if asset is not None else None
         asset_id = asset_id or _reuse(last_used, previous)

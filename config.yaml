@@ -85,6 +85,14 @@ subtitles:                      # README §6.4
   highlight_color: "#FFD23F"
   highlight_current_word: true
 
+effects:                        # README §6.5 — sound effects + on-screen text
+  sfx: true                     # needs assets/sfx/ + manifest.yaml (`uv run ogh assets`)
+  sfx_max_share: 0.3            # at most 30% of scenes get an effect, never two in a row
+  sfx_volume_db: -8             # effects sit under the narration
+  overlays: true                # place/date labels, number callouts, chapter cards
+  overlay_max_share: 0.25
+  max_chapters: 6
+
 publish:                        # README §7 — goes into each upload kit's checklist
   category: "Education"
   made_for_kids: false

@@ -186,6 +186,15 @@ def test_gemini_exhausted_rate_limit_becomes_retry_later(monkeypatch):
         llm._generate_with_retry("gemini-3.8-flash", "prompt", None)
 
 
+def test_gemini_dropped_connection_is_transient():
+    import httpx
+    from google.genai import errors as genai_errors
+
+    assert llm._is_transient(httpx.RemoteProtocolError("Server disconnected without sending a response."))
+    assert llm._is_transient(httpx.ConnectTimeout("timed out"))
+    assert not llm._is_transient(genai_errors.ClientError(404, {"error": {"message": "not found"}}))
+
+
 def test_generate_image_retries_until_an_image_arrives(session, monkeypatch):
     empty = types.SimpleNamespace(candidates=[])
     part = types.SimpleNamespace(inline_data=types.SimpleNamespace(data=b"png", mime_type="image/png"))

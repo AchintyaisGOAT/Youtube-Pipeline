@@ -10,8 +10,11 @@ altered between the check stage and the voice:
   never closes below the minimum (no image flashes for under a second); a sentence well
   over budget is split into balanced pieces at commas/semicolons/dashes.
 
-The worker LLM then writes one archive search query per scene in a single call. If that
-call fails outright, a proper-noun heuristic fills in the queries instead.
+The worker LLM then plans, in one call, each scene's archive search query, an optional
+sound-effect cue (only tags the local library has) and optional on-screen text (a
+place/date label, a number callout or a chapter card). `clean_extras` enforces the
+limits and rejects on-screen text the narration/sources don't back up. If that call
+fails outright, a proper-noun heuristic fills in the queries and there are no extras.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from pathlib import Path
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app import llm
+from app import assets, llm
 from app.config import get_config
 from app.db import Scene, Topic, Video
 from app.quota import RetryLater
@@ -163,30 +166,119 @@ def plan_scenes(script: str, min_words: float, max_words: float) -> list[tuple[s
     return out
 
 
-def _queries(session: Session, video: Video, scenes: list[str]) -> list[str]:
+_DIGITS = re.compile(r"\d[\d,.]*")
+_LETTERS = re.compile(r"[A-Za-z]{3,}")
+_OVERLAY_KINDS = ("label", "number", "chapter")
+
+
+def _digits(text: str) -> set[str]:
+    return {d.replace(",", "").rstrip(".") for d in _DIGITS.findall(text)}
+
+
+def overlay_is_grounded(overlay: dict, scene_text: str, sources: str) -> bool:
+    """On-screen text may not state anything the video can't back up: every number in it
+    must appear in the scene's narration or the researched articles, and every word of a
+    label (a place/name) in the narration, the articles or the video title. Chapter titles
+    are free wording but may not introduce numbers."""
+    text = overlay["text"]
+    known_digits = _digits(scene_text) | _digits(sources)
+    if not _digits(text) <= known_digits:
+        return False
+    if overlay["kind"] == "label":
+        haystack = f"{scene_text} {sources}"
+        words = _LETTERS.findall(text)
+        if not all(word.lower() in haystack.lower() for word in words):
+            return False
+        # a label names a place/date: it needs a number or a proper name as the narration
+        # capitalises it ("FRONT DOOR" from "the front door" is not a label)
+        proper = any(re.search(rf"\b{re.escape(w.capitalize())}\b", haystack) for w in words)
+        return bool(_digits(text)) or proper
+    return True
+
+
+def clean_extras(raw: list[dict], texts: list[str], sources: str, allowed_sfx: set[str], config) -> tuple[list, list]:
+    """(sfx per scene, overlay per scene) after enforcing the rules the prompt asks for:
+    known sfx tags only, ambient ones only where the scene mentions them (assets.sfx_fits),
+    at most `sfx_max_share` of scenes and never two in a row;
+    overlays grounded in the narration/sources, at most `overlay_max_share` of scenes for
+    labels/numbers and `max_chapters` chapter cards. Chapter cards then get a whoosh and
+    number callouts an impact, where the budget and spacing allow."""
+    effects = config.effects
+    n = len(texts)
+    sfx: list[str | None] = [None] * n
+    overlays: list[dict | None] = [None] * n
+    sfx_budget = math.floor(n * effects.sfx_max_share) if effects.sfx else 0
+    overlay_budget = math.floor(n * effects.overlay_max_share) if effects.overlays else 0
+    chapters_left = effects.max_chapters if effects.overlays else 0
+
+    for i, entry in enumerate(raw[:n]):
+        tag = entry.get("sfx")
+        if (sfx_budget and isinstance(tag, str) and tag in allowed_sfx and (i == 0 or sfx[i - 1] is None)
+                and assets.sfx_fits(tag, _TAGS.sub("", texts[i]))):
+            sfx[i] = tag
+            sfx_budget -= 1
+        overlay = entry.get("overlay")
+        if not (isinstance(overlay, dict) and overlay.get("kind") in _OVERLAY_KINDS):
+            continue
+        text = " ".join(str(overlay.get("text") or "").split())[:48]
+        candidate = {"kind": overlay["kind"], "text": text.upper() if overlay["kind"] != "number" else text}
+        if not text or not overlay_is_grounded(candidate, _TAGS.sub("", texts[i]), sources):
+            continue
+        if candidate["kind"] == "chapter":
+            if chapters_left and len(text.split()) <= 6:
+                overlays[i] = candidate
+                chapters_left -= 1
+        elif overlay_budget:
+            overlays[i] = candidate
+            overlay_budget -= 1
+
+    # A steady base layer of accents, whatever the LLM picked: a whoosh on every chapter
+    # card, an impact on every number callout (a live plan with strict rules used just 2
+    # effects in 71 scenes). Same budget, never next to another effect.
+    accent = {"chapter": "whoosh", "number": "impact"}
+    for i, overlay in enumerate(overlays):
+        tag = accent.get((overlay or {}).get("kind"))
+        neighbours = sfx[max(0, i - 1) : i + 2]
+        if tag in allowed_sfx and sfx_budget and not any(neighbours):
+            sfx[i] = tag
+            sfx_budget -= 1
+    return sfx, overlays
+
+
+def _plan_extras(session: Session, video: Video, texts: list[str]) -> tuple[list, list, list]:
+    """(image query, sfx, overlay) per scene from one worker call. If the call fails
+    outright: heuristic queries, no sfx, no overlays."""
+    config = get_config()
     topic = session.get(Topic, video.topic_id) if video.topic_id else None
     summary = " ".join(((topic.summary if topic else "") or "").split())[:300]
-    fallback = [fallback_query(text, video.title or "") for text in scenes]
+    fallback = [fallback_query(text, video.title or "") for text in texts]
+    allowed_sfx = set(assets.sfx_tags()) if config.effects.sfx else set()
     prompt = PROMPT_PATH.read_text(encoding="utf-8").format(
         title=video.title,
         summary=summary or "no summary",
-        scenes="\n".join(f"{i}. {_TAGS.sub('', t)}" for i, t in enumerate(scenes, start=1)),
+        sfx_tags=", ".join(sorted(allowed_sfx)) or "none — always use null",
+        max_chapters=config.effects.max_chapters if config.effects.overlays else 0,
+        scenes="\n".join(f"{i}. {_TAGS.sub('', t)}" for i, t in enumerate(texts, start=1)),
     )
     try:
         result = llm.generate(session, prompt, role="worker", step="segment", inputs={"video_id": str(video.id)})
     except RetryLater:
         raise
     except Exception as exc:
-        logger.warning("scene queries: LLM failed, using heuristic queries: {}", exc)
-        return fallback
+        logger.warning("scene plan: LLM failed, using heuristic queries and no extras: {}", exc)
+        return fallback, [None] * len(texts), [None] * len(texts)
 
-    by_id = {}
-    for entry in result.get("queries", []):
+    by_id: dict[int, dict] = {}
+    for entry in result.get("scenes", []):
         try:
-            by_id[int(entry.get("id"))] = str(entry.get("query") or "").strip()
+            by_id[int(entry.get("id"))] = entry
         except (TypeError, ValueError, AttributeError):
             continue
-    return [by_id.get(i) or fallback[i - 1] for i in range(1, len(scenes) + 1)]
+    raw = [by_id.get(i, {}) for i in range(1, len(texts) + 1)]
+    queries = [str(r.get("query") or "").strip() or fallback[i] for i, r in enumerate(raw)]
+    sources = " ".join(a.get("text", "") for a in (video.research or {}).get("articles", []))
+    sfx, overlays = clean_extras(raw, texts, f"{sources} {video.title or ''}", allowed_sfx, config)
+    return queries, sfx, overlays
 
 
 def run(session: Session, video_id: uuid.UUID) -> None:
@@ -199,13 +291,14 @@ def run(session: Session, video_id: uuid.UUID) -> None:
     config = get_config()
     wps = config.voice.words_per_second
     planned = plan_scenes(video.script, config.video.scene_seconds_min * wps, config.video.scene_seconds_max * wps)
-    queries = _queries(session, video, [text for text, _ in planned])
+    queries, sfx, overlays = _plan_extras(session, video, [text for text, _ in planned])
 
     for scene in list(video.scenes):  # a re-run replans from scratch
         session.delete(scene)
     session.flush()
-    for idx, ((text, in_short), query) in enumerate(zip(planned, queries, strict=True)):
-        session.add(Scene(video_id=video_id, idx=idx, text=text, image_query=query[:400], in_short_span=in_short))
+    for idx, ((text, in_short), query, cue, overlay) in enumerate(zip(planned, queries, sfx, overlays, strict=True)):
+        session.add(Scene(video_id=video_id, idx=idx, text=text, image_query=query[:400], in_short_span=in_short,
+                          sfx=cue, overlay=overlay))
     session.flush()
     session.expire(video, ["scenes"])  # the list read above for the delete is stale now
 
