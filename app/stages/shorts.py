@@ -13,14 +13,14 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import ChannelConfig, get_channel_config
-from app.db import Render, Segment, Short, Video
-from app.pipeline._ffmpeg import drawtext_font_file, probe, run_ffmpeg, video_codec_args
+from app.config import ChannelConfig, get_config
+from app.db import Render, Scene, Short, Video
+from app.ffmpeg import drawtext_font_file, probe, run_ffmpeg, video_codec_args
 from app.status import Status
 from app.storage import output_dir
 
 
-def _caption_for(short: Short, segments: list[Segment]) -> str:
+def _caption_for(short: Short, segments: list[Scene]) -> str:
     if short.caption:
         return short.caption
     covering = [
@@ -69,16 +69,16 @@ def _crop_and_caption(
 
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.CUTTING_SHORTS:
+    if video is None or Status(video.status) != Status.ASSEMBLED:
         return
 
     final_path = output_dir(video_id) / "final.mp4"
     if not final_path.exists():
         raise FileNotFoundError(f"video {video_id}: no final render at {final_path}")
 
-    config = get_channel_config(session, video.channel_id)
+    config = get_config()
     segments = list(
-        session.execute(select(Segment).filter_by(video_id=video_id).order_by(Segment.idx)).scalars()
+        session.execute(select(Scene).filter_by(video_id=video_id).order_by(Scene.idx)).scalars()
     )
     shorts = list(session.execute(select(Short).filter_by(video_id=video_id).order_by(Short.idx)).scalars())
 
@@ -94,7 +94,7 @@ def run(session: Session, video_id: uuid.UUID) -> None:
             _crop_and_caption(final_path, short.start_s, end_s, caption, config, out_path)
         except Exception as exc:
             session.add(Render(short_id=short.id, kind="short", stage="crop", status="failed", log=str(exc)))
-            short.status = Status.FAILED
+            short.status = "failed"
             continue
 
         short.end_s = end_s
@@ -109,4 +109,4 @@ def run(session: Session, video_id: uuid.UUID) -> None:
             Render(short_id=short.id, kind="short", stage="crop", status="success", output_uri=str(out_path))
         )
 
-    video.status = Status.GENERATING_METADATA
+    video.status = Status.SHORTS_READY

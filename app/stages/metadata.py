@@ -12,9 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import llm
-from app.config import get_channel_config
-from app.db import Asset, Segment, Video
-from app.status import Status
+from app.config import get_config
+from app.db import Asset, Scene, Video
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "metadata.md"
 
@@ -26,7 +25,7 @@ def _sources_block(session: Session, video_id: uuid.UUID) -> str:
     real legal requirement PD/CC0 terms impose (DESIGN.md #4/#45), not optional."""
     asset_ids = set(
         session.execute(
-            select(Segment.image_asset_id).filter_by(video_id=video_id).where(Segment.image_asset_id.is_not(None))
+            select(Scene.image_asset_id).filter_by(video_id=video_id).where(Scene.image_asset_id.is_not(None))
         ).scalars()
     )
     if not asset_ids:
@@ -42,12 +41,10 @@ def _sources_block(session: Session, video_id: uuid.UUID) -> str:
     return "Image sources:\n" + "\n".join(lines)
 
 
-def run(session: Session, video_id: uuid.UUID) -> None:
-    video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.GENERATING_METADATA:
-        return
-
-    config = get_channel_config(session, video.channel_id)
+def write_metadata(session: Session, video: Video) -> None:
+    """Called by the package stage (app/stages/package.py), not dispatched on its own."""
+    video_id = video.id
+    config = get_config()
     sources_block = _sources_block(session, video_id)
     prompt = PROMPT_PATH.read_text(encoding="utf-8").format(
         topic=video.title,
@@ -71,4 +68,3 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         "description": description,
         "tags": result.get("tags", []),
     }
-    video.status = Status.GENERATING_THUMBNAIL

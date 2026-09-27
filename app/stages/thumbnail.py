@@ -13,8 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db import Asset, Segment, Video
-from app.status import Status
+from app.db import Asset, Scene, Video
 from app.storage import output_dir
 
 THUMBNAIL_SIZE = (1280, 720)
@@ -31,10 +30,10 @@ def _headline(title: str, max_words: int = 4) -> str:
 def _subject_image_path(session: Session, video_id: uuid.UUID) -> Path | None:
     asset_id = (
         session.execute(
-            select(Segment.image_asset_id)
+            select(Scene.image_asset_id)
             .filter_by(video_id=video_id)
-            .where(Segment.image_asset_id.is_not(None))
-            .order_by(Segment.idx)
+            .where(Scene.image_asset_id.is_not(None))
+            .order_by(Scene.idx)
         )
         .scalars()
         .first()
@@ -97,15 +96,11 @@ def render_thumbnail(title: str, subject_path: Path | None, font_size: int = 90)
     return canvas
 
 
-def run(session: Session, video_id: uuid.UUID) -> None:
-    video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.GENERATING_THUMBNAIL:
-        return
+def write_thumbnail(session: Session, video: Video) -> None:
+    """Called by the package stage (app/stages/package.py), not dispatched on its own."""
+    canvas = render_thumbnail(video.title or "", _subject_image_path(session, video.id))
 
-    canvas = render_thumbnail(video.title or "", _subject_image_path(session, video_id))
-
-    out_path = output_dir(video_id) / "thumbnail.jpg"
-    canvas.save(out_path, quality=92)
+    out_path = output_dir(video.id) / "thumbnail.png"
+    canvas.save(out_path)
 
     video.thumbnail_uri = str(out_path)
-    video.status = Status.AWAITING_REVIEW

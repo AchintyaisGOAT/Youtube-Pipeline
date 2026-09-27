@@ -13,12 +13,12 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import ChannelConfig, get_channel_config, get_settings
-from app.db import Asset, Render, Segment, Video
-from app.pipeline._ffmpeg import pick_encoder, probe, run_ffmpeg, video_codec_args
-from app.pipeline._subtitles import build_subtitles
+from app.config import ChannelConfig, get_config, get_settings
+from app.db import Asset, Render, Scene, Video
+from app.ffmpeg import pick_encoder, probe, run_ffmpeg, video_codec_args
 from app.status import Status
 from app.storage import atomic_write_text, output_dir, work_dir
+from app.subtitles import build_subtitles
 
 
 def _record_render(
@@ -47,7 +47,7 @@ def _record_render(
 
 
 def _build_slideshow(
-    config: ChannelConfig, segments: list[Segment], assets_by_id: dict[uuid.UUID, Asset], work_path: Path
+    config: ChannelConfig, segments: list[Scene], assets_by_id: dict[uuid.UUID, Asset], work_path: Path
 ) -> Path:
     resolution = config.video.long_form.resolution
     fps = config.video.long_form.fps
@@ -127,7 +127,7 @@ def _pick_music_track(assets_dir: str) -> Path | None:
 
 
 def _add_ducked_music(video_path: Path, music_path: Path, config: ChannelConfig, out_path: Path) -> None:
-    pre_gain = config.video.music_bed_lufs - config.video.loudness_lufs
+    pre_gain = config.video.music_lufs - config.video.loudness_lufs
     filt = (
         f"[1:a]volume={pre_gain}dB[music];"
         "[music][0:a]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=250[ducked];"
@@ -172,16 +172,16 @@ def _burn_subtitles(video_path: Path, ass_path: Path, config: ChannelConfig, out
 
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.ASSEMBLING:
+    if video is None or Status(video.status) != Status.ALIGNED:
         return
 
     segments = list(
-        session.execute(select(Segment).filter_by(video_id=video_id).order_by(Segment.idx)).scalars()
+        session.execute(select(Scene).filter_by(video_id=video_id).order_by(Scene.idx)).scalars()
     )
     if not segments:
         raise ValueError(f"video {video_id}: no segments to assemble")
 
-    config = get_channel_config(session, video.channel_id)
+    config = get_config()
     settings = get_settings()
     asset_ids = {s.image_asset_id for s in segments if s.image_asset_id is not None}
     assets_by_id = {
@@ -225,4 +225,4 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         _record_render(session, video_id, stage, "failed", log=str(exc))
         raise
 
-    video.status = Status.CUTTING_SHORTS
+    video.status = Status.ASSEMBLED

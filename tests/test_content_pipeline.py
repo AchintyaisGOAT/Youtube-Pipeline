@@ -4,10 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from app.config import ChannelConfig, load_channel_config
-from app.db import Asset, Base, Candidate, Channel, Segment, Video, get_engine, get_sessionmaker
-from app.pipeline import gate, images, rank, script, segment
-from app.status import Status
+from app.db import Asset, Base, Scene, Topic, Video, get_engine, get_sessionmaker
+from app.stages import gate, images, rank, script, segment
+from app.status import Status, TopicStatus
 
 FIXED_SCRIPT = (
     "Rome was not built in a day. "
@@ -27,31 +26,23 @@ def session_factory(tmp_path):
     return get_sessionmaker(url)
 
 
-@pytest.fixture
-def channel(session_factory):
-    with session_factory() as session:
-        cfg = load_channel_config("config.example.yaml")
-        ch = Channel(handle="main", name=cfg.channel.name, config=cfg.model_dump(mode="json"))
-        session.add(ch)
-        session.commit()
-        return ch.id
 
 
 # --------------------------------------------------------------------------- #
 # segment.py — golden-file: [SHORT] spans -> in_short_span on the right segments
 # --------------------------------------------------------------------------- #
-def test_segment_marks_short_spans(session_factory, channel):
+def test_segment_marks_short_spans(session_factory):
     with session_factory() as session:
-        video = Video(channel_id=channel, status=Status.SEGMENTING, script=FIXED_SCRIPT)
+        video = Video(status=Status.CHECKED, script=FIXED_SCRIPT)
         session.add(video)
         session.commit()
 
         segment.run(session, video.id)
         session.commit()
 
-        rows = video.segments
+        rows = video.scenes
         assert len(rows) >= 5
-        assert video.status == Status.FETCHING_IMAGES
+        assert video.status == Status.SEGMENTED
 
         short_texts = {s.text for s in rows if s.in_short_span}
         assert any("Ides of March" in t for t in short_texts)
@@ -62,29 +53,28 @@ def test_segment_marks_short_spans(session_factory, channel):
         assert all(s.image_query for s in rows)
 
 
-def test_segment_is_idempotent_when_not_in_expected_status(session_factory, channel):
+def test_segment_is_idempotent_when_not_in_expected_status(session_factory):
     with session_factory() as session:
-        video = Video(channel_id=channel, status=Status.RESEARCHING, script=FIXED_SCRIPT)
+        video = Video(status=Status.SELECTED, script=FIXED_SCRIPT)
         session.add(video)
         session.commit()
 
         segment.run(session, video.id)  # wrong status -> no-op
         session.commit()
 
-        assert video.segments == []
-        assert video.status == Status.RESEARCHING
+        assert video.scenes == []
+        assert video.status == Status.SELECTED
 
 
 # --------------------------------------------------------------------------- #
-# gate.py — two-tier blocklist against config.example.yaml's real lists
+# gate.py — auto-veto list + scope, against config.yaml's real lists
 # --------------------------------------------------------------------------- #
-def test_gate_vetoes_recent_event(session_factory, channel):
+def test_gate_vetoes_recent_event(session_factory):
     with session_factory() as session:
-        candidate = Candidate(
-            channel_id=channel,
-            source="wikimedia_pageviews",
+        candidate = Topic(
+            source="trending",
             title="2024 Something That Just Happened",
-            status=Status.CANDIDATE_NEW,
+            status=TopicStatus.CANDIDATE,
         )
         session.add(candidate)
         session.commit()
@@ -92,115 +82,112 @@ def test_gate_vetoes_recent_event(session_factory, channel):
         gate.run(session, candidate.id)
         session.commit()
 
-        assert candidate.status == Status.CANDIDATE_VETOED
+        assert candidate.status == TopicStatus.VETOED
         assert "last 10 years" in candidate.rationale.lower() or "10 years" in candidate.rationale
 
 
-def test_gate_does_not_call_llm_for_deterministic_recency_veto(session_factory, channel, monkeypatch):
+def test_gate_does_not_call_llm_for_deterministic_recency_veto(session_factory, monkeypatch):
     def _fail(*a, **k):
         raise AssertionError("recency veto should short-circuit before any LLM call")
 
     monkeypatch.setattr(gate.llm, "generate", _fail)
     with session_factory() as session:
-        candidate = Candidate(
-            channel_id=channel, source="s", title="2024 Something", status=Status.CANDIDATE_NEW
+        candidate = Topic(
+            source="s", title="2024 Something", status=TopicStatus.CANDIDATE
         )
         session.add(candidate)
         session.commit()
         gate.run(session, candidate.id)  # would raise via _fail if it reached the LLM
         session.commit()
-        assert candidate.status == Status.CANDIDATE_VETOED
+        assert candidate.status == TopicStatus.VETOED
 
 
-def test_gate_approves_via_sensitivity_check(session_factory, channel, monkeypatch):
-    monkeypatch.setattr(gate.llm, "generate", lambda *a, **k: {"verdict": "pass", "reason": "benign"})
-    with session_factory() as session:
-        candidate = Candidate(
-            channel_id=channel,
-            source="wikimedia_pageviews",
-            title="Roman aqueducts",
-            summary="How Roman engineers built long-distance water supply systems.",
-            status=Status.CANDIDATE_NEW,
-        )
-        session.add(candidate)
-        session.commit()
-
-        gate.run(session, candidate.id)
-        session.commit()
-
-        assert candidate.status == Status.CANDIDATE_APPROVED
-
-
-def test_gate_routes_to_manual_review_via_sensitivity_check(session_factory, channel, monkeypatch):
+def test_gate_passes_and_records_relevance(session_factory, monkeypatch):
     monkeypatch.setattr(
-        gate.llm, "generate", lambda *a, **k: {"verdict": "manual_review", "reason": "religion is the subject"}
+        gate.llm, "generate", lambda *a, **k: {"verdict": "pass", "relevance": 8, "reason": "in scope"}
     )
     with session_factory() as session:
-        candidate = Candidate(
-            channel_id=channel,
-            source="wikimedia_pageviews",
-            title="Religion in the Roman Empire",
-            status=Status.CANDIDATE_NEW,
+        topic = Topic(
+            source="trending",
+            title="Roman aqueducts",
+            summary="How Roman engineers built long-distance water supply systems.",
+            status=TopicStatus.CANDIDATE,
         )
-        session.add(candidate)
+        session.add(topic)
         session.commit()
 
-        gate.run(session, candidate.id)
+        gate.run(session, topic.id)
         session.commit()
 
-        assert candidate.status == Status.CANDIDATE_MANUAL_REVIEW
+        assert topic.status == TopicStatus.PASSED
+        assert topic.raw["relevance"] == 8
 
 
-def test_gate_defaults_uncertain_verdict_to_manual_review(session_factory, channel, monkeypatch):
-    monkeypatch.setattr(gate.llm, "generate", lambda *a, **k: {"verdict": "not-a-real-verdict"})
+def test_gate_passes_sensitive_history_automatically(session_factory, monkeypatch):
+    """README §4.3: no manual-review tier — heavy but in-scope history just passes."""
+    monkeypatch.setattr(
+        gate.llm, "generate", lambda *a, **k: {"verdict": "pass", "relevance": 7, "reason": "in scope"}
+    )
     with session_factory() as session:
-        candidate = Candidate(
-            channel_id=channel, source="s", title="Something ambiguous", status=Status.CANDIDATE_NEW
-        )
-        session.add(candidate)
+        topic = Topic(source="trending", title="Religion in the Roman Empire", status=TopicStatus.CANDIDATE)
+        session.add(topic)
         session.commit()
 
-        gate.run(session, candidate.id)
+        gate.run(session, topic.id)
         session.commit()
 
-        assert candidate.status == Status.CANDIDATE_MANUAL_REVIEW
+        assert topic.status == TopicStatus.PASSED
+
+
+def test_gate_vetoes_unrecognized_verdict(session_factory, monkeypatch):
+    monkeypatch.setattr(gate.llm, "generate", lambda *a, **k: {"verdict": "manual_review"})
+    with session_factory() as session:
+        topic = Topic(source="s", title="Something ambiguous", status=TopicStatus.CANDIDATE)
+        session.add(topic)
+        session.commit()
+
+        gate.run(session, topic.id)
+        session.commit()
+
+        assert topic.status == TopicStatus.VETOED
 
 
 # --------------------------------------------------------------------------- #
-# rank.py — promotes the best candidate, never the same one twice
+# rank.py — best passed topic, one video in progress at a time
 # --------------------------------------------------------------------------- #
-def test_rank_promotes_only_once(session_factory, channel):
+def test_rank_picks_best_topic_and_waits_while_a_video_is_in_progress(session_factory):
     with session_factory() as session:
-        c1 = Candidate(channel_id=channel, source="s", title="A", status=Status.CANDIDATE_APPROVED, raw={"rank": 5})
-        c2 = Candidate(channel_id=channel, source="s", title="B", status=Status.CANDIDATE_APPROVED, raw={"rank": 1})
-        session.add_all([c1, c2])
+        weak = Topic(source="s", title="A", status=TopicStatus.PASSED, raw={"rank": 5, "relevance": 5})
+        strong = Topic(source="s", title="B", status=TopicStatus.PASSED, raw={"rank": 1, "relevance": 9})
+        session.add_all([weak, strong])
         session.commit()
 
         rank.run(session)
         session.commit()
-
         videos = session.query(Video).all()
-        assert len(videos) == 1
-        assert videos[0].candidate_id == c2.id  # rank 1 beats rank 5
+        assert [v.topic_id for v in videos] == [strong.id]
+        assert strong.status == TopicStatus.USED
 
-        rank.run(session)  # run again — c2 is already promoted, so this picks up c1
+        rank.run(session)  # the first video is still in progress -> nothing new starts
         session.commit()
+        assert session.query(Video).count() == 1
 
-        videos2 = session.query(Video).all()
-        assert len(videos2) == 2
-        assert {v.candidate_id for v in videos2} == {c1.id, c2.id}
+        videos[0].status = Status.APPROVED  # handed over to you -> next one may start
+        session.commit()
+        rank.run(session)
+        session.commit()
+        assert {v.topic_id for v in session.query(Video)} == {strong.id, weak.id}
 
 
 # --------------------------------------------------------------------------- #
 # script.py — enforces the [SHORT] contract without needing a live Gemini call
 # --------------------------------------------------------------------------- #
-def test_script_rejects_output_with_no_short_spans(session_factory, channel, monkeypatch):
+def test_script_rejects_output_with_no_short_spans(session_factory, monkeypatch):
     monkeypatch.setattr(script.llm, "generate", lambda *a, **k: "a script with no shorts at all")
 
     with session_factory() as session:
         video = Video(
-            channel_id=channel,
-            status=Status.SCRIPTING,
+            status=Status.RESEARCHED,
             research={"claims": [{"text": "x", "sources": ["y"]}]},
         )
         session.add(video)
@@ -210,13 +197,12 @@ def test_script_rejects_output_with_no_short_spans(session_factory, channel, mon
             script.run(session, video.id)
 
 
-def test_script_accepts_output_with_short_spans(session_factory, channel, monkeypatch):
+def test_script_accepts_output_with_short_spans(session_factory, monkeypatch):
     monkeypatch.setattr(script.llm, "generate", lambda *a, **k: FIXED_SCRIPT)
 
     with session_factory() as session:
         video = Video(
-            channel_id=channel,
-            status=Status.SCRIPTING,
+            status=Status.RESEARCHED,
             research={"claims": [{"text": "x", "sources": ["y"]}]},
         )
         session.add(video)
@@ -226,7 +212,7 @@ def test_script_accepts_output_with_short_spans(session_factory, channel, monkey
         session.commit()
 
         assert video.script == FIXED_SCRIPT
-        assert video.status == Status.SEGMENTING
+        assert video.status == Status.SCRIPTED
         assert video.script_prompt_hash
 
 
@@ -241,7 +227,7 @@ def test_prompt_hash_is_deterministic_and_sensitive_to_content():
     assert a != c
 
 
-def test_images_run_generates_and_dedups_by_prompt(session_factory, channel, monkeypatch):
+def test_images_run_generates_and_dedups_by_prompt(session_factory, monkeypatch):
     calls = []
 
     def fake_generate_image(session, prompt):
@@ -251,15 +237,15 @@ def test_images_run_generates_and_dedups_by_prompt(session_factory, channel, mon
     monkeypatch.setattr(images.llm, "generate_image", fake_generate_image)
 
     with session_factory() as session:
-        video = Video(channel_id=channel, status=Status.FETCHING_IMAGES)
+        video = Video(status=Status.SEGMENTED)
         session.add(video)
         session.commit()
 
         # two segments with IDENTICAL text -> identical prompt -> only one generation call
         session.add_all(
             [
-                Segment(video_id=video.id, idx=0, text="Rome burns.", in_short_span=False),
-                Segment(video_id=video.id, idx=1, text="Rome burns.", in_short_span=False),
+                Scene(video_id=video.id, idx=0, text="Rome burns.", in_short_span=False),
+                Scene(video_id=video.id, idx=1, text="Rome burns.", in_short_span=False),
             ]
         )
         session.commit()
@@ -268,9 +254,9 @@ def test_images_run_generates_and_dedups_by_prompt(session_factory, channel, mon
         session.commit()
 
         assert len(calls) == 1  # deduped by prompt hash, not re-generated per segment
-        assert video.status == Status.SYNTHESIZING_VOICE
+        assert video.status == Status.IMAGES_READY
 
-        segs = session.query(Segment).order_by(Segment.idx).all()
+        segs = session.query(Scene).order_by(Scene.idx).all()
         assert segs[0].image_asset_id == segs[1].image_asset_id  # same asset, reused
 
         asset = session.get(Asset, segs[0].image_asset_id)

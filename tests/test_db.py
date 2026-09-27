@@ -1,64 +1,49 @@
 from __future__ import annotations
 
-from app.config import ChannelConfig, get_channel_config
-from app.db import Base, Candidate, Channel, get_engine, get_sessionmaker
-from app.status import Status
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from app.db import Base, Scene, Topic, Video, get_engine, get_sessionmaker
+from app.status import Status, TopicStatus
 
 
-def test_create_all_makes_every_table(tmp_path):
-    engine = get_engine(f"sqlite:///{tmp_path / 'schema.db'}")
-    Base.metadata.create_all(engine)
-    assert len(Base.metadata.tables) == 13
-
-
-def test_candidate_roundtrip(tmp_path):
-    url = f"sqlite:///{tmp_path / 'roundtrip.db'}"
+@pytest.fixture
+def session_factory(tmp_path):
+    url = f"sqlite:///{tmp_path / 'db.db'}"
     Base.metadata.create_all(get_engine(url))
+    return get_sessionmaker(url)
 
-    with get_sessionmaker(url)() as session:
-        channel = Channel(handle="test", config={"config_version": 1})
-        session.add(channel)
+
+def test_create_all_makes_the_readme_tables(session_factory):
+    assert set(Base.metadata.tables) >= {"topic", "video", "scene", "short", "asset", "llm_cache"}
+
+
+def test_topic_roundtrip_defaults_to_candidate(session_factory):
+    with session_factory() as session:
+        topic = Topic(source="trending", title="Test Topic")
+        session.add(topic)
         session.commit()
 
-        candidate = Candidate(
-            channel_id=channel.id,
-            source="wikimedia",
-            title="Test Topic",
-            status=Status.CANDIDATE_NEW,
-        )
-        session.add(candidate)
+        assert session.get(Topic, topic.id).status == TopicStatus.CANDIDATE
+
+
+def test_topic_titles_are_unique_across_sources(session_factory):
+    """README §4.1: a topic is never done twice, whichever source found it."""
+    with session_factory() as session:
+        session.add_all([Topic(source="trending", title="Rome"), Topic(source="on_this_day", title="Rome")])
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+def test_deleting_a_video_cascades_to_its_scenes(session_factory):
+    with session_factory() as session:
+        video = Video(status=Status.SEGMENTED)
+        session.add(video)
+        session.flush()
+        session.add(Scene(video_id=video.id, idx=0, text="Rome burns."))
         session.commit()
 
-        fetched = session.get(Candidate, candidate.id)
-        assert fetched.status == Status.CANDIDATE_NEW
-        assert fetched.channel_id == channel.id
-
-
-def test_foreign_key_cascade_deletes_candidate(tmp_path):
-    url = f"sqlite:///{tmp_path / 'cascade.db'}"
-    Base.metadata.create_all(get_engine(url))
-
-    with get_sessionmaker(url)() as session:
-        channel = Channel(handle="test", config={"config_version": 1})
-        session.add(channel)
-        session.commit()
-        session.add(Candidate(channel_id=channel.id, source="s", title="t"))
+        session.delete(video)
         session.commit()
 
-        session.delete(channel)
-        session.commit()
-
-        assert session.query(Candidate).count() == 0
-
-
-def test_get_channel_config_reads_active_channel(tmp_path):
-    url = f"sqlite:///{tmp_path / 'config.db'}"
-    Base.metadata.create_all(get_engine(url))
-
-    cfg = ChannelConfig()
-    with get_sessionmaker(url)() as session:
-        session.add(Channel(handle="main", config=cfg.model_dump(mode="json")))
-        session.commit()
-
-        loaded = get_channel_config(session)
-        assert loaded.timezone == cfg.timezone
+        assert session.query(Scene).count() == 0

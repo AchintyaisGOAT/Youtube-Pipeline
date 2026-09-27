@@ -15,8 +15,8 @@ import soundfile as sf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import get_channel_config
-from app.db import Segment, Video
+from app.config import get_config
+from app.db import Scene, Video
 from app.status import Status
 from app.storage import work_dir
 
@@ -35,20 +35,20 @@ def _kokoro_instance():
 
 def _narration_sentences(session: Session, video_id: uuid.UUID) -> list[str]:
     return list(
-        session.execute(select(Segment.text).filter_by(video_id=video_id).order_by(Segment.idx)).scalars()
+        session.execute(select(Scene.text).filter_by(video_id=video_id).order_by(Scene.idx)).scalars()
     )
 
 
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.SYNTHESIZING_VOICE:
+    if video is None or Status(video.status) != Status.IMAGES_READY:
         return
 
     sentences = _narration_sentences(session, video_id)
     if not sentences:
         raise ValueError(f"video {video_id}: no segments to narrate")
 
-    config = get_channel_config(session, video.channel_id)
+    config = get_config()
     kokoro = _kokoro_instance()
 
     chunks: list[np.ndarray] = []
@@ -66,4 +66,4 @@ def run(session: Session, video_id: uuid.UUID) -> None:
     sf.write(out_path, audio, sample_rate)
 
     video.duration_s = len(audio) / sample_rate
-    video.status = Status.ALIGNING
+    video.status = Status.NARRATED

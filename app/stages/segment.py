@@ -13,7 +13,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from app.db import Segment, Video
+from app.db import Scene, Video
 from app.status import Status
 
 _SHORT_SPAN = re.compile(r"\[SHORT\](.*?)\[/SHORT\]", re.DOTALL)
@@ -63,14 +63,14 @@ def _sentences_with_span_flag(script: str) -> list[tuple[str, bool]]:
 
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.SEGMENTING:
+    if video is None or Status(video.status) != Status.CHECKED:
         return
     if not video.script:
         raise ValueError(f"video {video_id}: no script to segment")
 
     for idx, (text, in_short_span) in enumerate(_sentences_with_span_flag(video.script)):
         session.add(
-            Segment(
+            Scene(
                 video_id=video_id,
                 idx=idx,
                 text=text,
@@ -79,4 +79,4 @@ def run(session: Session, video_id: uuid.UUID) -> None:
             )
         )
 
-    video.status = Status.FETCHING_IMAGES
+    video.status = Status.SEGMENTED

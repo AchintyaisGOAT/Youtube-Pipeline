@@ -15,7 +15,7 @@ from __future__ import annotations
 import pysubs2
 
 from app.config import ChannelConfig
-from app.db import Segment
+from app.db import Scene
 
 _ALIGNMENT_BY_POSITION = {
     "bottom-left": 1,
@@ -61,7 +61,7 @@ def _hex_to_ass_color(hex_color: str) -> pysubs2.Color:
     return pysubs2.Color(r, g, b)
 
 
-def build_subtitles(segments: list[Segment], config: ChannelConfig) -> pysubs2.SSAFile:
+def build_subtitles(segments: list[Scene], config: ChannelConfig) -> pysubs2.SSAFile:
     subs = pysubs2.SSAFile()
     style = pysubs2.SSAStyle()
     style.fontsize = config.subtitles.size

@@ -17,8 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import llm
-from app.config import get_channel_config
-from app.db import Asset, Segment, Video
+from app.config import get_config
+from app.db import Asset, Scene, Video
 from app.status import Status
 from app.storage import atomic_write_bytes, cache_dir
 
@@ -29,11 +29,11 @@ def _prompt_hash(prompt: str) -> str:
 
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.FETCHING_IMAGES:
+    if video is None or Status(video.status) != Status.SEGMENTED:
         return
 
-    config = get_channel_config(session, video.channel_id)
-    segments = session.execute(select(Segment).filter_by(video_id=video_id).order_by(Segment.idx)).scalars()
+    config = get_config()
+    segments = session.execute(select(Scene).filter_by(video_id=video_id).order_by(Scene.idx)).scalars()
 
     for segment in segments:
         if segment.image_asset_id is not None or not segment.text:
@@ -45,7 +45,7 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         # around the world, with no connection to the actual video (a true-crime case),
         # because "the rhyme" has no clear referent on its own.
         prompt = (
-            f"{config.images.art_style}\n\n"
+            f"{config.images.ai_style}\n\n"
             f"This is one scene from a video about: {video.title}\n"
             f"Illustrate this specific moment from that video: {segment.text}"
         )
@@ -82,4 +82,4 @@ def run(session: Session, video_id: uuid.UUID) -> None:
 
         segment.image_asset_id = asset.id
 
-    video.status = Status.SYNTHESIZING_VOICE
+    video.status = Status.IMAGES_READY

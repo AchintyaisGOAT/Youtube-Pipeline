@@ -1,33 +1,30 @@
-"""Sequential pipeline orchestrator — no queue, no worker process.
+"""`ogh run` — one sequential pass over the whole pipeline (README §4.1). No queue, no
+worker, no scheduler: you run it when you choose, and it's safe to stop and restart.
 
-Run manually or from a Windows Task Scheduler job. One run:
+1. discover   — only when no topic is waiting (app/stages/discover.py)
+2. gate       — every `candidate` topic
+3. rank       — starts a video from the best passed topic, if none is in progress
+4. videos     — each non-terminal video is walked through as many stages as it can go,
+                until it reaches review, fails, or is deferred
 
-1. discover   — only fetches when `discovery.run` is due (see app/pipeline/discover.py)
-2. gate       — every `candidate_new` row
-3. rank       — promotes at most one approved candidate to a video
-4. videos     — each non-terminal video is walked through as many stages as it can go
-                in this run, until it reaches a human gate, fails, or is deferred
-5. analytics  — due 48h/7d snapshots for published uploads
-
-A stage module is looked up by the row's current `Status` and exposes
-``run(session, row_id)`` (discover/rank/analytics take no id). No `session.commit()`
-inside a stage — every stage call gets its own session here, committed on success.
+A stage module is looked up by the video's current `Status` and exposes
+``run(session, video_id)`` (discover/rank take no id). No `session.commit()` inside a
+stage — every stage call gets its own session here, committed on success.
 
 Outcomes of a stage call:
 - success          -> committed; a video moves straight on to its next stage
 - ``RetryLater``   -> (quota spent, provider rate-limited/overloaded) committed as-is
-                      (keeps partial progress + quota accounting) with the row's status
-                      left unchanged, so a later run resumes it; never a failure
-- any other error  -> rolled back; the row is marked failed/rejected and an alert sent
+                      (keeps partial progress + quota accounting) with the status left
+                      unchanged, so the next run resumes it; never a failure
+- any other error  -> rolled back; the video is marked `failed` (topic: `vetoed`) with
+                      the error saved, and an alert sent
 
-A stage that isn't implemented yet is skipped, not fatal.
+A stage that isn't implemented yet is skipped: the video waits at that status.
 """
 
 from __future__ import annotations
 
-import argparse
 import importlib
-import sys
 import uuid
 from collections.abc import Callable
 from enum import Enum
@@ -37,29 +34,26 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import notify
-from app.db import Candidate, Video, get_sessionmaker
+from app.db import Topic, Video, get_sessionmaker
 from app.quota import RetryLater
-from app.status import TERMINAL, Status
+from app.status import TERMINAL, Status, TopicStatus
 
-GATE_STAGE = "app.pipeline.gate"
-DISCOVER_STAGE = "app.pipeline.discover"
-RANK_STAGE = "app.pipeline.rank"
-ANALYTICS_STAGE = "app.pipeline.analytics"
+DISCOVER_STAGE = "app.stages.discover"
+GATE_STAGE = "app.stages.gate"
+RANK_STAGE = "app.stages.rank"
 
-#: video-stage status -> module (takes video_id)
+#: video status -> the stage module that moves it on (README §4.2)
 VIDEO_STAGES: dict[Status, str] = {
-    Status.RESEARCHING: "app.pipeline.research",
-    Status.FACT_CHECKING: "app.pipeline.factcheck",
-    Status.SCRIPTING: "app.pipeline.script",
-    Status.SEGMENTING: "app.pipeline.segment",
-    Status.FETCHING_IMAGES: "app.pipeline.images",
-    Status.SYNTHESIZING_VOICE: "app.pipeline.tts",
-    Status.ALIGNING: "app.pipeline.align",
-    Status.ASSEMBLING: "app.pipeline.assemble",
-    Status.CUTTING_SHORTS: "app.pipeline.shorts",
-    Status.GENERATING_METADATA: "app.pipeline.metadata",
-    Status.GENERATING_THUMBNAIL: "app.pipeline.thumbnail",
-    Status.APPROVED: "app.pipeline.upload",
+    Status.SELECTED: "app.stages.research",
+    Status.RESEARCHED: "app.stages.script",
+    Status.SCRIPTED: "app.stages.check",
+    Status.CHECKED: "app.stages.segment",
+    Status.SEGMENTED: "app.stages.images",
+    Status.IMAGES_READY: "app.stages.narrate",
+    Status.NARRATED: "app.stages.align",
+    Status.ALIGNED: "app.stages.assemble",
+    Status.ASSEMBLED: "app.stages.shorts",
+    Status.SHORTS_READY: "app.stages.package",
 }
 
 
@@ -107,34 +101,37 @@ def _run_singleton(module_path: str, **kwargs) -> None:
         notify.alert(f"{module_path} failed")
 
 
-def _mark(model, row_id: uuid.UUID, status: Status, error: Exception | None = None) -> None:
+def _mark(model, row_id: uuid.UUID, status: str, error: Exception | None = None) -> None:
     session = get_sessionmaker()()
     try:
         row = session.get(model, row_id)
         row.status = status
-        if error is not None and hasattr(row, "error"):
-            row.error = repr(error)
+        if error is not None:
+            if hasattr(row, "error"):
+                row.error = repr(error)
+            elif hasattr(row, "rationale"):
+                row.rationale = f"gate error: {error!r}"
         session.commit()
     finally:
         session.close()
 
 
-def _gate_candidates() -> None:
+def _gate_topics() -> None:
     gate = _load_stage(GATE_STAGE)
     if gate is None:
         return
     with get_sessionmaker()() as session:
         pending = list(
-            session.execute(select(Candidate.id).filter_by(status=Status.CANDIDATE_NEW)).scalars()
+            session.execute(select(Topic.id).filter_by(status=TopicStatus.CANDIDATE)).scalars()
         )
 
-    for candidate_id in pending:
-        outcome, _ = _attempt(f"candidate {candidate_id} gate", lambda s, c=candidate_id: gate.run(s, c))
+    for topic_id in pending:
+        outcome, error = _attempt(f"topic {topic_id} gate", lambda s, t=topic_id: gate.run(s, t))
         if outcome is Outcome.DEFERRED:
-            break  # quota/provider trouble hits every remaining candidate the same way
+            break  # quota/provider trouble hits every remaining topic the same way
         if outcome is Outcome.FAILED:
-            _mark(Candidate, candidate_id, Status.CANDIDATE_REJECTED)
-            notify.alert(f"candidate {candidate_id} failed at gate")
+            _mark(Topic, topic_id, TopicStatus.VETOED, error)
+            notify.alert(f"topic {topic_id} failed at gate")
 
 
 def _advance_video(video_id: uuid.UUID) -> None:
@@ -144,7 +141,7 @@ def _advance_video(video_id: uuid.UUID) -> None:
             status = Status(session.get(Video, video_id).status)
         module_path = VIDEO_STAGES.get(status)
         if module_path is None:
-            return  # awaiting_review, terminal, etc. — waiting on a human or finished
+            return  # packaged / approved / terminal — waiting on you, or finished
         module = _load_stage(module_path)
         if module is None:
             return
@@ -179,20 +176,8 @@ def _advance_videos() -> None:
         _advance_video(video_id)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run one pass of the pipeline.")
-    parser.add_argument(
-        "--force-discover", action="store_true", help="run discovery now even if it isn't scheduled"
-    )
-    args = parser.parse_args(argv)
-
-    _run_singleton(DISCOVER_STAGE, force=args.force_discover)
-    _gate_candidates()
+def run(*, force_discover: bool = False) -> None:
+    _run_singleton(DISCOVER_STAGE, force=force_discover)
+    _gate_topics()
     _run_singleton(RANK_STAGE)
     _advance_videos()
-    _run_singleton(ANALYTICS_STAGE)
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

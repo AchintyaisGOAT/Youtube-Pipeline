@@ -12,7 +12,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app import llm
-from app.config import get_channel_config
+from app.config import get_config
 from app.db import Video
 from app.status import Status
 
@@ -21,10 +21,10 @@ PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "resea
 
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.RESEARCHING:
+    if video is None or Status(video.status) != Status.SELECTED:
         return
 
-    config = get_channel_config(session, video.channel_id)
+    config = get_config()
     prompt = PROMPT_PATH.read_text(encoding="utf-8").format(
         topic=video.title,
         audience=config.channel.audience,
@@ -37,4 +37,4 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         raise ValueError(f"video {video_id}: research returned no claims")
 
     video.research = result
-    video.status = Status.FACT_CHECKING
+    video.status = Status.RESEARCHED

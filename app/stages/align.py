@@ -18,8 +18,8 @@ from pathlib import Path
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.config import get_channel_config
-from app.db import Segment, Short, Video
+from app.config import get_config
+from app.db import Scene, Short, Video
 from app.status import Status
 from app.storage import work_dir
 
@@ -83,7 +83,7 @@ def _transcribe_words(audio_path: Path, prompt: str, model_name: str) -> list[tu
     return out
 
 
-def _forced_alignment(segments: list[Segment], recognized: list[tuple[float, float]]) -> bool:
+def _forced_alignment(segments: list[Scene], recognized: list[tuple[float, float]]) -> bool:
     """Consume `recognized` words positionally per segment's expected word count.
     Returns False (caller should fall back) if there aren't even enough recognized
     words to cover every segment."""
@@ -99,7 +99,7 @@ def _forced_alignment(segments: list[Segment], recognized: list[tuple[float, flo
     return True
 
 
-def _proportional_timing(segments: list[Segment], duration_s: float) -> None:
+def _proportional_timing(segments: list[Scene], duration_s: float) -> None:
     counts = [max(1, len(_words(s.text))) for s in segments]
     total = sum(counts)
     cursor = 0.0
@@ -110,7 +110,7 @@ def _proportional_timing(segments: list[Segment], duration_s: float) -> None:
         cursor += span
 
 
-def _create_shorts(session: Session, video_id: uuid.UUID, segments: list[Segment]) -> None:
+def _create_shorts(session: Session, video_id: uuid.UUID, segments: list[Scene]) -> None:
     """Idempotent: a stage must be safe to re-run (WORK_MEDIA.md §5) -- verified live
     that re-running align.py on a video that already has Short rows (e.g. re-processing
     after an upstream fix, same as any other retry) hit a UNIQUE constraint on
@@ -137,16 +137,16 @@ def _create_shorts(session: Session, video_id: uuid.UUID, segments: list[Segment
 
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.ALIGNING:
+    if video is None or Status(video.status) != Status.NARRATED:
         return
 
     segments = list(
-        session.execute(select(Segment).filter_by(video_id=video_id).order_by(Segment.idx)).scalars()
+        session.execute(select(Scene).filter_by(video_id=video_id).order_by(Scene.idx)).scalars()
     )
     if not segments:
         raise ValueError(f"video {video_id}: no segments to align")
 
-    config = get_channel_config(session, video.channel_id)
+    config = get_config()
     audio_path = work_dir(video_id) / "narration.wav"
     if not audio_path.exists():
         raise FileNotFoundError(f"video {video_id}: narration audio not found at {audio_path}")
@@ -166,4 +166,4 @@ def run(session: Session, video_id: uuid.UUID) -> None:
         _proportional_timing(segments, video.duration_s)
 
     _create_shorts(session, video_id, segments)
-    video.status = Status.ASSEMBLING
+    video.status = Status.ALIGNED

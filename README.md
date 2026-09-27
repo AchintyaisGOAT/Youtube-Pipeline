@@ -144,11 +144,12 @@ Videos:
 
 ```
 selected → researched → scripted → checked → segmented → images_ready → narrated
-  → aligned → assembled → shorts_ready → packaged → awaiting_review → approved → uploaded
-                                                                  ↘ rejected
+  → aligned → assembled → shorts_ready → packaged → approved → uploaded
+                                                  ↘ rejected
 ```
 
-Plus `failed`, with the error saved. `ogh review` can send a video back to any earlier status to
+`packaged` means the upload kit is built and the video is waiting for `ogh review`. Plus
+`failed`, with the error saved. `ogh review` can send a video back to any earlier status to
 redo it from there.
 
 ### 4.3 Topic safety
@@ -166,7 +167,7 @@ redo it from there.
 ### 4.4 Your commands
 
 ```powershell
-uv run ogh run       # advance everything as far as possible
+uv run ogh run       # advance everything as far as possible (--discover: look for topics now)
 uv run ogh review    # review finished videos: approve / reject / send back / pick title / mark uploaded
 uv run ogh doctor    # green/red health check of config, keys, DB, FFmpeg + encoder, disk, models, assets
 ```
@@ -346,12 +347,17 @@ extra docs.
 ```
 app/
   cli.py           the `ogh` command: run · review · doctor
+  orchestrator.py  `ogh run`: one pass over every topic and video (outcome rules in §4.1)
   config.py        load + validate config.yaml and .env; data/ paths
   db.py            SQLAlchemy models + session
   llm.py           one interface over Gemini + Groq; routing + fallback per §5
   http.py          shared httpx client with retries
   ffmpeg.py        FFmpeg/ffprobe commands + encoder choice, shared by assemble + Shorts
   subtitles.py     ASS/SRT building from word timings, shared by assemble + Shorts
+  storage.py       data/ paths (work, output, cache) + atomic writes
+  quota.py         daily usage counters; RetryLater / QuotaExceeded
+  notify.py        optional failure alert to ALERT_URL
+  status.py        the status vocabulary in §4.2
   stages/          one module per stage in §4.1, each with the same run(...) interface
 prompts/           one template per LLM step in §5
 tests/
@@ -446,6 +452,7 @@ Then:
 | 2026-09-27 | Shorts re-rendered vertically from the scenes (not cropped). Thumbnail = best image + LLM hook. |
 | 2026-09-27 | `ogh review`: approve / reject / send back to a stage / pick title / mark uploaded. Cleanup: work files deleted on approval, kit 30 days after upload. |
 | 2026-09-27 | Structure: `ogh` CLI, `app/stages/`, committed `config.yaml`, this README as the only doc. Python stays 3.11. |
+| 2026-09-27 | `awaiting_review` merged into `packaged` (same meaning). Encoder output forced to limited-range 4:2:0 (`-color_range tv`): archival JPEGs are full-range and QSV otherwise tags output `yuvj420p`. |
 
 ---
 
@@ -455,7 +462,7 @@ Then:
 |---|---|---|
 | G1 | Retry-later orchestration, multi-stage runs, UTC datetimes | ✅ Done (some parts reworked in S1/S3) |
 | S0 | This README | ✅ Done |
-| S1 | Restructure: `ogh` CLI, `app/stages/`, committed `config.yaml`, remove old docs/scripts, YouTube API, analytics, OAuth | ⬜ |
+| S1 | Restructure: `ogh` CLI, `app/stages/`, committed `config.yaml`, remove old docs/scripts, YouTube API, analytics, OAuth; Quick Sync encoder; README statuses/tables | ✅ Done — the pipeline pauses at `scripted` until the check stage lands in S4 |
 | S2 | LLM routing (Gemini + Groq), model IDs in config, `llm_call` table | ⬜ |
 | S3 | Discover (both sources), gate + relevance, rank with one video at a time | ⬜ |
 | S4 | Research (article + linked), script, check, scene plan | ⬜ |

@@ -13,7 +13,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app import llm
-from app.config import get_channel_config
+from app.config import get_config
 from app.db import Video
 from app.status import Status
 
@@ -22,18 +22,18 @@ PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "scrip
 
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.SCRIPTING:
+    if video is None or Status(video.status) != Status.RESEARCHED:
         return
 
-    config = get_channel_config(session, video.channel_id)
+    config = get_config()
     prompt = PROMPT_PATH.read_text(encoding="utf-8").format(
         topic=video.title,
         research_json=json.dumps(video.research or {}, indent=2),
-        target_seconds_min=config.video.long_form.target_seconds_min,
-        target_seconds_max=config.video.long_form.target_seconds_max,
+        target_seconds_min=config.video.long_form.seconds_min,
+        target_seconds_max=config.video.long_form.seconds_max,
         words_per_second=config.voice.words_per_second,
         tone=config.channel.tone,
-        shorts_count=config.video.shorts.per_long_form,
+        shorts_count=config.video.shorts.per_video,
     )
 
     script_text = llm.generate(session, prompt, inputs={"video_id": str(video_id)}, json_mode=False)
@@ -42,4 +42,4 @@ def run(session: Session, video_id: uuid.UUID) -> None:
 
     video.script = script_text
     video.script_prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    video.status = Status.SEGMENTING
+    video.status = Status.SCRIPTED

@@ -1,10 +1,8 @@
-"""Database: SQLAlchemy 2.0 models for every table in DESIGN.md section 5, plus
-``llm_cache`` (DESIGN section 8.2), and a small sync engine/session helper.
+"""Database: SQLAlchemy 2.0 models (README §8) and a small sync engine/session helper.
 
-Single-file SQLite (see WORK_FOUNDATION.md §2) — no server, no Alembic; schema changes
-go through ``Base.metadata.create_all()`` at startup, which is additive-only. Status
-values are stored as plain strings — always assign ``Status`` members
-(``app.status.Status``), never bare strings.
+Single-file SQLite — no server, no migrations; the schema is created with
+``Base.metadata.create_all()``. Status values are stored as plain strings — always assign
+``Status`` / ``TopicStatus`` members (``app.status``), never bare strings.
 """
 
 from __future__ import annotations
@@ -43,7 +41,7 @@ from sqlalchemy.orm import (
 )
 
 from app.config import get_settings
-from app.status import Status
+from app.status import Status, TopicStatus
 
 
 class UtcDateTime(TypeDecorator):
@@ -82,62 +80,37 @@ class TimestampMixin:
 
 
 # --------------------------------------------------------------------------- #
-# channel
+# topics
 # --------------------------------------------------------------------------- #
-class Channel(Base, TimestampMixin):
-    __tablename__ = "channel"
+class Topic(Base, TimestampMixin):
+    __tablename__ = "topic"
+    #: One row per title across every source: a topic is never done twice.
+    __table_args__ = (UniqueConstraint("title", name="uq_topic_title"),)
 
     id: Mapped[uuid.UUID] = _pk()
-    handle: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
-    name: Mapped[str] = mapped_column(String(200), default="")
-    youtube_channel_id: Mapped[str | None] = mapped_column(String(64))
-    config: Mapped[dict] = mapped_column(JSON, nullable=False)
-    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-
-    videos: Mapped[list[Video]] = relationship(back_populates="channel")
-
-
-# --------------------------------------------------------------------------- #
-# discovery
-# --------------------------------------------------------------------------- #
-class Candidate(Base, TimestampMixin):
-    __tablename__ = "candidate"
-    __table_args__ = (
-        UniqueConstraint("channel_id", "source", "title", name="uq_candidate_dedupe"),
-    )
-
-    id: Mapped[uuid.UUID] = _pk()
-    channel_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("channel.id", ondelete="CASCADE"), index=True
-    )
     source: Mapped[str] = mapped_column(String(60), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     summary: Mapped[str | None] = mapped_column(Text)
     raw: Mapped[dict | None] = mapped_column(JSON)
     score: Mapped[float | None] = mapped_column(Float)
     rationale: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default=Status.CANDIDATE_NEW)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default=TopicStatus.CANDIDATE)
     decided_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
-    decided_by: Mapped[str | None] = mapped_column(String(60))
 
 
 # --------------------------------------------------------------------------- #
-# video + shorts + segments
+# video + scenes + shorts
 # --------------------------------------------------------------------------- #
 class Video(Base, TimestampMixin):
     __tablename__ = "video"
 
     id: Mapped[uuid.UUID] = _pk()
-    channel_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("channel.id", ondelete="CASCADE"), index=True
+    topic_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("topic.id", ondelete="SET NULL"), index=True
     )
-    candidate_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("candidate.id", ondelete="SET NULL"), index=True
-    )
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default=Status.RESEARCHING)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default=Status.SELECTED)
 
     title: Mapped[str | None] = mapped_column(String(300))
-    angle: Mapped[str | None] = mapped_column(String(400))
     script: Mapped[str | None] = mapped_column(Text)
     script_prompt_hash: Mapped[str | None] = mapped_column(String(64))
     research: Mapped[dict | None] = mapped_column(JSON)
@@ -146,35 +119,17 @@ class Video(Base, TimestampMixin):
     thumbnail_uri: Mapped[str | None] = mapped_column(String(1024))
     error: Mapped[str | None] = mapped_column(Text)
 
-    channel: Mapped[Channel] = relationship(back_populates="videos")
-    segments: Mapped[list[Segment]] = relationship(
-        back_populates="video", cascade="all, delete-orphan", order_by="Segment.idx"
+    scenes: Mapped[list[Scene]] = relationship(
+        back_populates="video", cascade="all, delete-orphan", order_by="Scene.idx"
     )
     shorts: Mapped[list[Short]] = relationship(
         back_populates="video", cascade="all, delete-orphan", order_by="Short.idx"
     )
 
 
-class Short(Base, TimestampMixin):
-    __tablename__ = "short"
-    __table_args__ = (UniqueConstraint("video_id", "idx", name="uq_short_video_idx"),)
-
-    id: Mapped[uuid.UUID] = _pk()
-    video_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video.id", ondelete="CASCADE"))
-    idx: Mapped[int] = mapped_column(Integer, nullable=False)
-    start_s: Mapped[float] = mapped_column(Float, nullable=False)
-    end_s: Mapped[float] = mapped_column(Float, nullable=False)
-    title: Mapped[str | None] = mapped_column(String(200))
-    caption: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default=Status.CUTTING_SHORTS)
-    youtube_id: Mapped[str | None] = mapped_column(String(32))
-
-    video: Mapped[Video] = relationship(back_populates="shorts")
-
-
-class Segment(Base):
-    __tablename__ = "segment"
-    __table_args__ = (UniqueConstraint("video_id", "idx", name="uq_segment_video_idx"),)
+class Scene(Base):
+    __tablename__ = "scene"
+    __table_args__ = (UniqueConstraint("video_id", "idx", name="uq_scene_video_idx"),)
 
     id: Mapped[uuid.UUID] = _pk()
     video_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video.id", ondelete="CASCADE"))
@@ -188,7 +143,24 @@ class Segment(Base):
     end_s: Mapped[float | None] = mapped_column(Float)
     in_short_span: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    video: Mapped[Video] = relationship(back_populates="segments")
+    video: Mapped[Video] = relationship(back_populates="scenes")
+
+
+class Short(Base, TimestampMixin):
+    __tablename__ = "short"
+    __table_args__ = (UniqueConstraint("video_id", "idx", name="uq_short_video_idx"),)
+
+    id: Mapped[uuid.UUID] = _pk()
+    video_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("video.id", ondelete="CASCADE"))
+    idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_s: Mapped[float] = mapped_column(Float, nullable=False)
+    end_s: Mapped[float] = mapped_column(Float, nullable=False)
+    title: Mapped[str | None] = mapped_column(String(200))
+    caption: Mapped[str | None] = mapped_column(Text)
+    #: "pending" | "rendered" | "failed" — per-Short render state, not a video Status.
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
+
+    video: Mapped[Video] = relationship(back_populates="shorts")
 
 
 # --------------------------------------------------------------------------- #
@@ -199,7 +171,7 @@ class Asset(Base):
     __table_args__ = (UniqueConstraint("source", "source_id", name="uq_asset_source"),)
 
     id: Mapped[uuid.UUID] = _pk()
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # image | music | sfx
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # image | music
     source: Mapped[str] = mapped_column(String(60), nullable=False)
     source_id: Mapped[str | None] = mapped_column(String(200))
     license: Mapped[str | None] = mapped_column(String(60))
@@ -214,9 +186,11 @@ class Asset(Base):
 
 
 # --------------------------------------------------------------------------- #
-# renders + uploads + analytics
+# render log + API usage + LLM cache
 # --------------------------------------------------------------------------- #
 class Render(Base):
+    """Append-only log of FFmpeg render attempts (long-form stages and Shorts)."""
+
     __tablename__ = "render"
 
     id: Mapped[uuid.UUID] = _pk()
@@ -226,87 +200,26 @@ class Render(Base):
     short_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("short.id", ondelete="CASCADE"), index=True
     )
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # longform | short | stage
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # longform | short
     stage: Mapped[str | None] = mapped_column(String(40))
-    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)  # success | failed
     output_uri: Mapped[str | None] = mapped_column(String(1024))
-    duration_s: Mapped[float | None] = mapped_column(Float)
     log: Mapped[str | None] = mapped_column(Text)
     tool_versions: Mapped[dict | None] = mapped_column(JSON)
-    started_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
-    finished_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), nullable=False
     )
 
 
-class Upload(Base, TimestampMixin):
-    __tablename__ = "upload"
-
-    id: Mapped[uuid.UUID] = _pk()
-    target_type: Mapped[str] = mapped_column(String(16), nullable=False)  # video | short
-    target_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
-    client_token: Mapped[uuid.UUID] = mapped_column(
-        Uuid, nullable=False, unique=True, default=uuid.uuid4
-    )
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default=Status.UPLOADING)
-    youtube_id: Mapped[str | None] = mapped_column(String(32))
-    visibility: Mapped[str | None] = mapped_column(String(16))
-    published_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
-    quota_units: Mapped[int | None] = mapped_column(Integer)
-    error: Mapped[str | None] = mapped_column(Text)
-
-
-class AnalyticsSnapshot(Base):
-    __tablename__ = "analytics_snapshot"
-    __table_args__ = (UniqueConstraint("youtube_id", "captured_at", name="uq_analytics_snapshot"),)
-
-    id: Mapped[uuid.UUID] = _pk()
-    youtube_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    captured_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
-    views: Mapped[int | None] = mapped_column(Integer)
-    watch_time_minutes: Mapped[float | None] = mapped_column(Float)
-    avg_view_duration_s: Mapped[float | None] = mapped_column(Float)
-    retention: Mapped[dict | None] = mapped_column(JSON)
-
-
-# --------------------------------------------------------------------------- #
-# ledgers + feedback + ops
-# --------------------------------------------------------------------------- #
 class ApiQuotaLedger(Base):
     __tablename__ = "api_quota_ledger"
     __table_args__ = (UniqueConstraint("api", "day", name="uq_quota_api_day"),)
 
     id: Mapped[uuid.UUID] = _pk()
-    api: Mapped[str] = mapped_column(String(40), nullable=False)  # youtube | gemini | ...
+    api: Mapped[str] = mapped_column(String(40), nullable=False)  # gemini | gemini_image | ...
     day: Mapped[date] = mapped_column(Date, nullable=False)
     units_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-
-class TopicPerformance(Base, TimestampMixin):
-    __tablename__ = "topic_performance"
-
-    id: Mapped[uuid.UUID] = _pk()
-    channel_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("channel.id", ondelete="CASCADE"), index=True
-    )
-    topic_key: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
-    tag: Mapped[str | None] = mapped_column(String(80))
-    length_bucket: Mapped[str | None] = mapped_column(String(20))
-    thumb_style: Mapped[str | None] = mapped_column(String(40))
-    videos: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    avg_views: Mapped[float | None] = mapped_column(Float)
-    avg_retention: Mapped[float | None] = mapped_column(Float)
-    score: Mapped[float | None] = mapped_column(Float)
-
-
-class Heartbeat(Base):
-    __tablename__ = "heartbeat"
-
-    key: Mapped[str] = mapped_column(String(60), primary_key=True)
-    at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
-    detail: Mapped[dict | None] = mapped_column(JSON)
 
 
 class LlmCache(Base):
