@@ -94,20 +94,37 @@ def test_narrate_times_scenes_from_the_audio_with_no_gaps(session_factory, monke
 # --------------------------------------------------------------------------- #
 # align
 # --------------------------------------------------------------------------- #
-def test_time_words_pairs_one_to_one_or_spreads_by_length():
-    words = [("Lizzie", False), ("Borden", False), ("took", False), ("an", False), ("axe.", False)]
-    heard = [(0.1, 0.4), (0.4, 0.8), (0.9, 1.0), (1.0, 1.1), (1.1, 1.5)]
-    assert [w["start"] for w in align.time_words(words, 0, 2, heard)] == [0.1, 0.4, 0.9, 1.0, 1.1]
+def test_tokens_split_hyphens_and_dashes_and_drop_punctuation():
+    assert align.tokens("thirty-two-year-old") == ["thirty", "two", "year", "old"]
+    assert align.tokens("dollars—worth") == ["dollars", "worth"]
+    assert align.tokens("Father's") == ["fathers"]
+    assert align.tokens(".") == []
 
-    spread = align.time_words(words, 0, 2, heard[:3])  # Whisper merged/missed words
-    assert spread[0]["start"] == 0.1 and spread[-1]["end"] == pytest.approx(1.0)
-    assert spread[0]["end"] - spread[0]["start"] > spread[3]["end"] - spread[3]["start"]  # "Lizzie" > "an"
-    assert align.time_words(words, 3, 5, [])[0]["start"] == 3  # nothing heard: the scene span
+
+def test_alignment_survives_the_cases_that_broke_the_old_count_check():
+    words = ["Just", "before", "eleven-ten", "on", "August", "4,", "1892,", "maid", "Bridget", "."]
+    heard = [(" Just", 0.0, 0.2), (" before", 0.2, 0.5), (" eleven", 0.5, 0.8), ("-ten", 0.8, 1.0),
+             (" on", 1.0, 1.1), (" August", 1.1, 1.5), (" 4,", 1.5, 1.7), (" 1892,", 1.8, 2.4),
+             (" made", 2.5, 2.7), (" Bridget", 2.7, 3.1)]  # "maid" misheard as "made"
+    times = align.align_words(words, heard)
+    assert times[2] == (0.5, 1.0)  # both halves of eleven-ten
+    assert times[6] == (1.8, 2.4)
+    assert times[7] is None and times[9] is None  # misheard word, lone full stop
+
+    filled = align.fill_gaps(words, times, 0.0, 3.5)
+    assert filled[7][0] >= 2.4 and filled[7][1] <= 2.7  # squeezed between its matched neighbours
+    assert all(a[1] <= b[0] + 1e-9 for a, b in zip(filled, filled[1:], strict=False))  # in order, no overlap
+
+
+def test_fill_gaps_uses_the_scene_bounds_when_nothing_matched():
+    filled = align.fill_gaps(["Rome", "fell."], [None, None], 3.0, 5.0)
+    assert filled[0][0] == 3.0 and filled[-1][1] == pytest.approx(5.0)
 
 
 def test_align_writes_words_and_creates_shorts(session_factory, monkeypatch, tmp_path):
     (tmp_path / "work" / "narration.wav").write_bytes(b"")
-    heard = [(0.1, 0.5), (0.5, 0.9), (1.1, 1.4), (1.4, 1.8), (2.1, 2.6)]
+    heard = [(" Rome", 0.1, 0.5), (" burned.", 0.5, 0.9), (" Et", 1.1, 1.4), (" tu?", 1.4, 1.8), (" The", 2.1, 2.3),
+             (" end.", 2.3, 2.6)]
     monkeypatch.setattr(align, "transcribe", lambda path, model: heard)
     with session_factory() as session:
         video = _video(session, Status.NARRATED, ["Rome burned.", "[QUOTE]Et tu?[/QUOTE]", "The end."],
