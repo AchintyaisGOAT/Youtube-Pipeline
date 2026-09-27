@@ -73,10 +73,13 @@ You'll also need `assets/music/` (a few CC0/YouTube-Audio-Library tracks — ass
 music if the folder is empty) and `assets/fonts/*.ttf` (subtitle + thumbnail font — falls back
 to a plain default font if missing).
 
-Once `doctor.py` is all green, `uv run python run_pipeline.py` runs one pass (discovery, then
-advances every candidate/video one stage) and `uv run python review.py` handles the human
-review gate once a video reaches `awaiting_review`. Run it repeatedly (or on a Task Scheduler
-tick) to walk a video the rest of the way through. Before trusting a full run, do the manual
+Once `doctor.py` is all green, `uv run python run_pipeline.py` runs one pass: discovery (only
+when `discovery.run` is due — `--force-discover` to run it now), the topic gate, promotion of
+at most one candidate to a video, then each video walked through as many stages as it can go
+until it reaches review, fails, or hits a quota/rate limit (which just defers it to the next
+run). `uv run python review.py` handles the human review gate once a video reaches
+`awaiting_review`; the next run after approval uploads it. Schedule `run_pipeline.py` on a
+Task Scheduler tick (e.g. hourly) for unattended operation. Before trusting a full run, do the manual
 30-second-script test render WORK_MEDIA.md's DoD asks for — the FFmpeg pipeline hasn't been
 exercised against a real binary yet.
 

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db import AnalyticsSnapshot, TopicPerformance, Upload, Video
+from app.db import AnalyticsSnapshot, Candidate, TopicPerformance, Upload, Video
 from app.status import Status
 
 _SNAPSHOT_OFFSETS = (timedelta(hours=48), timedelta(days=7))
@@ -64,6 +64,14 @@ def _capture_snapshot(session: Session, client, upload: Upload, offset: timedelt
     _update_topic_performance(session, upload, views)
 
 
+def topic_key_for(session: Session, video: Video) -> str:
+    """The originating candidate's title — the only key rank.py can look up *before* a
+    video exists. Not `video.title`: metadata.py overwrites that with a generated
+    YouTube title, which no future candidate would ever match."""
+    candidate = session.get(Candidate, video.candidate_id) if video.candidate_id else None
+    return candidate.title if candidate is not None else (video.title or str(video.id))
+
+
 def _update_topic_performance(session: Session, upload: Upload, views: int) -> None:
     if upload.target_type != "video":
         return
@@ -71,7 +79,7 @@ def _update_topic_performance(session: Session, upload: Upload, views: int) -> N
     if video is None:
         return
 
-    topic_key = video.title or str(video.id)
+    topic_key = topic_key_for(session, video)
     row = session.execute(
         select(TopicPerformance).filter_by(channel_id=video.channel_id, topic_key=topic_key)
     ).scalar_one_or_none()

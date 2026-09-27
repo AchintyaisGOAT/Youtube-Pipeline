@@ -24,6 +24,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app import schedule
+
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
@@ -90,6 +92,11 @@ class Discovery(_Model):
     also: list[str] = Field(default_factory=list)
     run: str = "weekly Mon 06:00"
     target_long_form_per_month: int = Field(6, ge=1, le=100)
+
+    @field_validator("run")
+    @classmethod
+    def _run(cls, v: str) -> str:
+        return schedule.validate(v)
 
 
 class LongForm(_Model):
@@ -190,6 +197,11 @@ class Images(_Model):
 class Schedule(_Model):
     long_form: list[str] = Field(default_factory=list)
     shorts: list[str] = Field(default_factory=list)
+
+    @field_validator("long_form", "shorts")
+    @classmethod
+    def _slots(cls, v: list[str]) -> list[str]:
+        return [schedule.validate(slot) for slot in v]
 
 
 class Publish(_Model):

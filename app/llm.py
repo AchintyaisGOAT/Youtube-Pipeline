@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import LlmCache
-from app.quota import check_and_increment
+from app.quota import RetryLater, check_and_increment
 
 #   gemini-2.5-flash (DESIGN.md's original pick) returns 404 "no longer available to
 #   new users" as of 2026-09 -- verified live against a real key.
@@ -76,16 +76,24 @@ def _is_transient(exc: BaseException) -> bool:
 
 
 def _generate_with_retry(model: str, prompt: str, config):
+    """Retries transient errors in-process for a few minutes; if they're still failing
+    after that, raises ``RetryLater`` so the orchestrator parks the row until a later
+    run instead of failing it — a spent daily free-tier quota won't clear in minutes."""
     from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
-    for attempt in Retrying(
-        retry=retry_if_exception(_is_transient),
-        wait=wait_exponential(multiplier=3, min=5, max=60),
-        stop=stop_after_attempt(5),
-        reraise=True,
-    ):
-        with attempt:
-            return _client_instance().models.generate_content(model=model, contents=prompt, config=config)
+    try:
+        for attempt in Retrying(
+            retry=retry_if_exception(_is_transient),
+            wait=wait_exponential(multiplier=3, min=5, max=60),
+            stop=stop_after_attempt(5),
+            reraise=True,
+        ):
+            with attempt:
+                return _client_instance().models.generate_content(model=model, contents=prompt, config=config)
+    except Exception as exc:
+        if _is_transient(exc):
+            raise RetryLater(f"{model} still unavailable after retries: {exc}") from exc
+        raise
 
 
 #: Verified live: returns a single response part with `inline_data` set directly (no
@@ -120,8 +128,8 @@ def generate_image(session: Session, prompt: str, *, attempts: int = 4) -> tuple
     app/pipeline/images.py, which dedups by a hash of the prompt via the `asset` table,
     same as it always deduped downloaded photos by source id).
     """
-    check_and_increment(session, "gemini", tokens=_estimate_tokens(prompt))
     for _ in range(attempts):
+        check_and_increment(session, "gemini_image", units=1)
         response = _generate_with_retry(IMAGE_MODEL, prompt, None)
         image = _extract_image(response)
         if image is not None:
@@ -151,7 +159,7 @@ def generate(
         cached.last_used_at = datetime.now(UTC)
         return cached.response if json_mode else cached.response["text"]
 
-    check_and_increment(session, "gemini", tokens=_estimate_tokens(prompt))
+    check_and_increment(session, "gemini", units=1, tokens=_estimate_tokens(prompt))
 
     from google.genai import types
 

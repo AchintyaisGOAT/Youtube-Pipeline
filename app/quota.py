@@ -1,8 +1,9 @@
 """Daily API budget enforcement against `api_quota_ledger`.
 
 Call ``check_and_increment()`` before every metered call (YouTube upload units, Gemini
-tokens). It raises ``QuotaExceeded`` instead of proceeding once today's budget for that
-API is spent — the orchestrator treats that as "retry later", not a hard failure.
+requests/tokens). It raises ``QuotaExceeded`` instead of proceeding once today's budget
+for that API is spent. ``QuotaExceeded`` is a ``RetryLater``: the orchestrator leaves the
+row's status untouched and picks it up again on a later run, rather than failing it.
 """
 
 from __future__ import annotations
@@ -14,16 +15,26 @@ from sqlalchemy.orm import Session
 
 from app.db import ApiQuotaLedger
 
-#: Conservative daily caps per external API (DESIGN.md §3.1 / §6E). Tune once real usage
-#: is known; a missing entry means "no cap enforced".
-DAILY_LIMITS: dict[str, int] = {
-    "youtube": 10_000,  # quota units/day
-    "gemini": 1_000_000,  # tokens/day, free-tier ballpark
-}
+
+class RetryLater(Exception):
+    """A temporary condition (quota spent, provider rate-limited/overloaded). The stage
+    should be retried on a later run — never treated as a permanent failure."""
 
 
-class QuotaExceeded(Exception):
+class QuotaExceeded(RetryLater):
     """Raised when a call would push today's usage for an API past its daily cap."""
+
+
+#: Conservative daily caps per external API, keyed by counter. `units` is YouTube quota
+#: units for "youtube" and the request count for the Gemini APIs. A missing API or
+#: counter means "counted, but no local cap" — the provider's own 429 still applies and
+#: surfaces as RetryLater via app/llm.py. Set Gemini request caps once the real free-tier
+#: limits for the pinned models are known.
+DAILY_LIMITS: dict[str, dict[str, int]] = {
+    "youtube": {"units": 10_000},
+    "gemini": {"tokens": 1_000_000},
+    "gemini_image": {},
+}
 
 
 def check_and_increment(session: Session, api: str, units: int = 0, tokens: int = 0) -> None:
@@ -32,12 +43,12 @@ def check_and_increment(session: Session, api: str, units: int = 0, tokens: int 
     used_units = row.units_used if row else 0
     used_tokens = row.tokens_used if row else 0
 
-    limit = DAILY_LIMITS.get(api)
-    if limit is not None:
-        if units and used_units + units > limit:
-            raise QuotaExceeded(f"{api} daily unit budget exhausted ({used_units + units} > {limit})")
-        if tokens and used_tokens + tokens > limit:
-            raise QuotaExceeded(f"{api} daily token budget exhausted ({used_tokens + tokens} > {limit})")
+    limits = DAILY_LIMITS.get(api, {})
+    unit_cap, token_cap = limits.get("units"), limits.get("tokens")
+    if units and unit_cap is not None and used_units + units > unit_cap:
+        raise QuotaExceeded(f"{api} daily unit budget exhausted ({used_units + units} > {unit_cap})")
+    if tokens and token_cap is not None and used_tokens + tokens > token_cap:
+        raise QuotaExceeded(f"{api} daily token budget exhausted ({used_tokens + tokens} > {token_cap})")
 
     if row is None:
         session.add(ApiQuotaLedger(api=api, day=today, units_used=units, tokens_used=tokens))

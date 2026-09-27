@@ -1,6 +1,7 @@
 """Pick the best `candidate_approved` row and promote it to a `video` row
-(DESIGN.md #26/#28). No id parameter — scans every approved candidate across every
-channel and promotes at most one per call.
+(DESIGN.md #26/#28). No id parameter — the orchestrator calls it once per run; it scans
+every approved candidate and promotes at most one per call, and none once the channel
+has already started `discovery.target_long_form_per_month` videos in the last 30 days.
 
 A candidate stays `candidate_approved` forever (that status isn't in `Status.TERMINAL`
 and Content must not invent a new enum member without asking Foundation — WORK_*.md §4),
@@ -10,9 +11,12 @@ is excluded from consideration, not re-scored.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_channel_config
 from app.db import Candidate, TopicPerformance, Video
 from app.status import Status
 
@@ -40,6 +44,16 @@ def run(session: Session) -> None:
     }
 
     best = max(approved, key=lambda c: _score(c, topic_scores))
+
+    config = get_channel_config(session, best.channel_id)
+    started_last_30_days = session.execute(
+        select(func.count(Video.id)).where(
+            Video.channel_id == best.channel_id,
+            Video.created_at >= datetime.now(UTC) - timedelta(days=30),
+        )
+    ).scalar_one()
+    if started_last_30_days >= config.discovery.target_long_form_per_month:
+        return
     best.score = _score(best, topic_scores)
 
     session.add(

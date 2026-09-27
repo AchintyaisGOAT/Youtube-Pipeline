@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from sqlalchemy import (
@@ -25,6 +25,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
     Uuid,
     create_engine,
@@ -45,6 +46,24 @@ from app.config import get_settings
 from app.status import Status
 
 
+class UtcDateTime(TypeDecorator):
+    """Timezone-aware UTC datetimes on SQLite, which has no timezone type: a
+    `UtcDateTime` column there silently comes back *naive* (verified), so
+    comparing it with `datetime.now(UTC)` raises TypeError. Stores naive UTC, always
+    returns aware UTC; naive values passed in are assumed to already be UTC."""
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect) -> datetime | None:
+        if value is not None and value.tzinfo is not None:
+            value = value.astimezone(UTC).replace(tzinfo=None)
+        return value
+
+    def process_result_value(self, value: datetime | None, dialect) -> datetime | None:
+        return value.replace(tzinfo=UTC) if value is not None else None
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -55,10 +74,10 @@ def _pk() -> Mapped[uuid.UUID]:
 
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -98,7 +117,7 @@ class Candidate(Base, TimestampMixin):
     score: Mapped[float | None] = mapped_column(Float)
     rationale: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default=Status.CANDIDATE_NEW)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     decided_by: Mapped[str | None] = mapped_column(String(60))
 
 
@@ -190,7 +209,7 @@ class Asset(Base):
     sha256: Mapped[str | None] = mapped_column(String(64))
     meta: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -214,10 +233,10 @@ class Render(Base):
     duration_s: Mapped[float | None] = mapped_column(Float)
     log: Mapped[str | None] = mapped_column(Text)
     tool_versions: Mapped[dict | None] = mapped_column(JSON)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
 
 
@@ -233,7 +252,7 @@ class Upload(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(40), nullable=False, default=Status.UPLOADING)
     youtube_id: Mapped[str | None] = mapped_column(String(32))
     visibility: Mapped[str | None] = mapped_column(String(16))
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    published_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     quota_units: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
 
@@ -244,7 +263,7 @@ class AnalyticsSnapshot(Base):
 
     id: Mapped[uuid.UUID] = _pk()
     youtube_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
     views: Mapped[int | None] = mapped_column(Integer)
     watch_time_minutes: Mapped[float | None] = mapped_column(Float)
     avg_view_duration_s: Mapped[float | None] = mapped_column(Float)
@@ -286,7 +305,7 @@ class Heartbeat(Base):
     __tablename__ = "heartbeat"
 
     key: Mapped[str] = mapped_column(String(60), primary_key=True)
-    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
     detail: Mapped[dict | None] = mapped_column(JSON)
 
 
@@ -300,9 +319,9 @@ class LlmCache(Base):
     response_tokens: Mapped[int | None] = mapped_column(Integer)
     hits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
 
 
 # --------------------------------------------------------------------------- #
