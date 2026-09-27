@@ -172,17 +172,19 @@ class Voice(_Model):
 
 class Alignment(_Model):
     whisper_model: str = "small.en"
-    mismatch_fallback_ratio: float = Field(0.15, ge=0, le=1)
 
 
 class Subtitles(_Model):
+    #: Relative to the repo; if missing, the first assets/fonts/*.ttf, else Arial.
     font_file: str = "assets/fonts/Inter-Regular.ttf"
-    size: int = Field(34, ge=8, le=200)
-    position: Literal["bottom-center", "bottom-left", "bottom-right", "center", "top-center"] = (
-        "bottom-center"
-    )
+    #: Real pixels: the subtitle canvas matches the video (1920x1080 / 1080x1920).
+    size: int = Field(64, ge=8, le=300)
+    shorts_size: int = Field(84, ge=8, le=300)
+    words_per_caption: int = Field(4, ge=1, le=12)
+    position: Literal["bottom-center", "center", "top-center"] = "bottom-center"
     highlight_color: str = "#FFD23F"
-    karaoke: bool = True
+    #: Colour the word being spoken; off = plain white captions.
+    highlight_current_word: bool = True
 
     @field_validator("highlight_color")
     @classmethod

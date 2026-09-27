@@ -1,15 +1,34 @@
-"""FFmpeg assembly: segment images (Ken Burns) + narration + ducked music bed + burned
-subtitles -> the final long-form file. Staged per DESIGN.md #12 (slideshow ->
-+narration -> +music(ducked) -> +subs -> final); each stage writes under
-work_dir(video_id), gets an ffprobe sanity check, and is logged as a `render` row.
+"""Assemble the long-form video (README §4.1 step 11, §6.3–6.4).
+
+1. One clip per scene, exactly as long as the scene's narration (pauses included — the
+   narrate stage measured them), with a slow pan or zoom. Motions rotate through six
+   kinds, and an image shown again gets a different motion than last time, so reuse
+   doesn't look repeated. Narrow/portrait images sit on a blurred, darkened copy of
+   themselves instead of being cropped to 16:9 (which cut faces off period portraits).
+   Clips are rendered in parallel.
+2. One final pass: clips joined, subtitles burned in, narration + music bed mixed and
+   loudness-normalised, encoded once.
+
+Audio: narration normalised to `video.loudness_lufs`; a music track from
+assets/music/manifest.yaml normalised to `video.music_lufs`, ducked while speech plays,
+looped to length; final mix normalised again. No manifest/tracks = no music. The chosen
+track is recorded in video.video_metadata["music"] for the credits.
+
+Scene frame boundaries come from the cumulative scene times (round(start*fps) ..
+round(end*fps)), so rounding never accumulates and the picture stays locked to the voice.
 """
 
 from __future__ import annotations
 
-import random
+import json
+import shutil
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import yaml
+from loguru import logger
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,156 +37,117 @@ from app.db import Asset, Render, Scene, Video
 from app.ffmpeg import pick_encoder, probe, run_ffmpeg, video_codec_args
 from app.status import Status
 from app.storage import atomic_write_text, output_dir, work_dir
-from app.subtitles import build_subtitles
+from app.subtitles import build_subtitles, font_path
+
+MOTIONS = ("zoom_in", "pan_right", "zoom_out", "pan_left", "pan_down", "pan_up")
+#: How far a pan/zoom travels: 12% — slow enough to read as calm, not a whip.
+ZOOM = 1.12
+#: Images narrower than this aspect ratio get the blurred-background treatment.
+FIT_BELOW_ASPECT = 1.4
+SUPERSAMPLE = 2  # zoompan on a 2x canvas avoids the visible 1px jitter of slow zooms
+RENDER_WORKERS = 4
 
 
-def _record_render(
-    session: Session,
-    video_id: uuid.UUID,
-    stage: str,
-    status: str,
-    output_uri: Path | None = None,
-    log: str | None = None,
-) -> None:
-    """`status` here is deliberately not an `app.status.Status` member — Render rows are
-    an append-only per-attempt audit log, not a state-machine column the orchestrator
-    dispatches on, and none of this pipeline's lifecycle statuses ("published",
-    "researching", ...) actually describe "did this ffmpeg stage succeed"."""
-    session.add(
-        Render(
-            video_id=video_id,
-            kind="longform",
-            stage=stage,
-            status=status,
-            output_uri=str(output_uri) if output_uri else None,
-            log=log,
-            tool_versions={"encoder": pick_encoder()},
-        )
+# --------------------------------------------------------------------------- #
+# planning (pure — unit-tested)
+# --------------------------------------------------------------------------- #
+def choose_motions(image_ids: list) -> list[str]:
+    """Rotate through MOTIONS; an image seen before never repeats its last motion."""
+    last_motion: dict = {}
+    chosen = []
+    for i, image in enumerate(image_ids):
+        motion = MOTIONS[i % len(MOTIONS)]
+        if last_motion.get(image) == motion:
+            motion = MOTIONS[(i + 1) % len(MOTIONS)]
+        last_motion[image] = motion
+        chosen.append(motion)
+    return chosen
+
+
+def frame_counts(bounds: list[tuple[float, float]], fps: int) -> list[int]:
+    return [max(1, round(end * fps) - round(start * fps)) for start, end in bounds]
+
+
+def zoompan(motion: str, frames: int, size: tuple[int, int], fps: int) -> str:
+    p = f"on/{max(1, frames - 1)}"
+    center_x, center_y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+    z, x, y = f"{ZOOM}", center_x, center_y
+    if motion == "zoom_in":
+        z = f"1+{ZOOM - 1:.3f}*{p}"
+    elif motion == "zoom_out":
+        z = f"{ZOOM}-{ZOOM - 1:.3f}*{p}"
+    elif motion == "pan_right":
+        x = f"(iw-iw/zoom)*{p}"
+    elif motion == "pan_left":
+        x = f"(iw-iw/zoom)*(1-{p})"
+    elif motion == "pan_down":
+        y = f"(ih-ih/zoom)*{p}"
+    elif motion == "pan_up":
+        y = f"(ih-ih/zoom)*(1-{p})"
+    return f"zoompan=z='{z}':x='{x}':y='{y}':d={frames}:s={size[0]}x{size[1]}:fps={fps}"
+
+
+def clip_filter(motion: str, frames: int, size: tuple[int, int], fps: int, image_aspect: float) -> str:
+    cw, ch = size[0] * SUPERSAMPLE, size[1] * SUPERSAMPLE
+    motion_filter = f"{zoompan(motion, frames, size, fps)},setsar=1"
+    if image_aspect >= FIT_BELOW_ASPECT:
+        return f"[0:v]scale={cw}:{ch}:force_original_aspect_ratio=increase,crop={cw}:{ch},setsar=1,{motion_filter}[v]"
+    small_w, small_h = cw // 8, ch // 8  # blur at 1/8 size: same look, a fraction of the work
+    return (
+        f"[0:v]split[a][b];"
+        f"[a]scale={small_w}:{small_h}:force_original_aspect_ratio=increase,crop={small_w}:{small_h},"
+        f"boxblur=8:2,eq=brightness=-0.12,scale={cw}:{ch}[bg];"
+        f"[b]scale=-2:{ch}[fg];"
+        f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,{motion_filter}[v]"
     )
 
 
-def _build_slideshow(
-    config: ChannelConfig, segments: list[Scene], assets_by_id: dict[uuid.UUID, Asset], work_path: Path
-) -> Path:
-    resolution = config.video.long_form.resolution
-    fps = config.video.long_form.fps
-    codec_args = video_codec_args(config)
-
-    clip_paths: list[Path] = []
-    last_image: Path | None = None
-    for i, segment in enumerate(segments):
-        duration = max(0.1, (segment.end_s or 0.0) - (segment.start_s or 0.0))
-        image_path = None
-        if segment.image_asset_id is not None:
-            asset = assets_by_id.get(segment.image_asset_id)
-            if asset is not None and asset.uri and Path(asset.uri).exists():
-                image_path = Path(asset.uri)
-        image_path = image_path or last_image
-        if image_path is None:
-            continue  # no image available yet at all — catches up once the first one appears
-        last_image = image_path
-
-        clip_path = work_path / f"clip_{i:04d}.mp4"
-        zoom_in = i % 2 == 0  # DESIGN.md #13 — alternate direction for minimal but real visual variety
-        zoom_expr = "min(zoom+0.0012,1.15)" if zoom_in else "if(eq(on,1),1.15,max(zoom-0.0012,1.0))"
-        num_frames = max(1, round(duration * fps))
-        vf = (
-            f"scale={resolution[0] * 2}:{resolution[1] * 2}:force_original_aspect_ratio=increase,"
-            f"crop={resolution[0] * 2}:{resolution[1] * 2},"
-            f"zoompan=z='{zoom_expr}':d={num_frames}:s={resolution[0]}x{resolution[1]}:fps={fps},"
-            "setsar=1"
-        )
-        # `-t` must be an OUTPUT option here, not an input one. zoompan's `d` multiplies
-        # *each* input frame into `d` output frames -- it isn't a total-frame count. A
-        # looped still image defaults to 25fps on the input side, so `-t {duration}`
-        # placed before `-i` (limiting input read time) combined with `d` sized for the
-        # *output* fps produced duration**2 * 25 seconds of output (verified live: a 3s
-        # segment came out 225s long). Putting `-t` after the filter instead just
-        # truncates the output stream at the intended length, independent of whatever
-        # zoompan's internal multiplier is doing.
-        run_ffmpeg(
-            [
-                "-loop", "1", "-i", str(image_path),
-                "-vf", vf, "-r", str(fps), "-t", f"{duration:.3f}", *codec_args, "-an",
-                str(clip_path),
-            ]
-        )
-        probe(clip_path)
-        clip_paths.append(clip_path)
-
-    if not clip_paths:
-        raise RuntimeError("no segment images available to build a slideshow")
-
-    concat_list = work_path / "concat.txt"
-    atomic_write_text(concat_list, "".join(f"file '{p.as_posix()}'\n" for p in clip_paths))
-
-    slideshow_path = work_path / "slideshow.mp4"
-    run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(slideshow_path)])
-    probe(slideshow_path)
-    return slideshow_path
-
-
-def _mux_narration(video_path: Path, narration_path: Path, out_path: Path) -> None:
-    run_ffmpeg(
-        [
-            "-i", str(video_path), "-i", str(narration_path),
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest",
-            str(out_path),
-        ]
+def audio_graph(config: ChannelConfig, with_music: bool) -> str:
+    loud, music = config.video.loudness_lufs, config.video.music_lufs
+    final = f"loudnorm=I={loud}:TP=-1.5:LRA=11,aresample=48000[a]"
+    if not with_music:
+        return f"[1:a]{final}"
+    return (
+        f"[1:a]loudnorm=I={loud}:TP=-1.5:LRA=11,asplit=2[n1][n2];"
+        f"[2:a]loudnorm=I={music}:TP=-2:LRA=11[m];"
+        f"[m][n1]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=400[duck];"
+        f"[n2][duck]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{final}"
     )
-    probe(out_path)
 
 
-def _pick_music_track(assets_dir: str) -> Path | None:
-    music_dir = Path(assets_dir) / "music"
-    tracks = sorted(music_dir.glob("*.mp3")) + sorted(music_dir.glob("*.wav"))
-    return random.choice(tracks) if tracks else None
+# --------------------------------------------------------------------------- #
+# music
+# --------------------------------------------------------------------------- #
+def pick_music(video_id: uuid.UUID) -> dict | None:
+    """A track from assets/music/manifest.yaml (file, title, artist, license, credit),
+    chosen by video id so a re-render keeps the same one. None = no music."""
+    folder = Path(get_settings().assets_dir) / "music"
+    manifest = folder / "manifest.yaml"
+    if not manifest.exists():
+        return None
+    tracks = [t for t in (yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}).get("tracks", [])
+              if isinstance(t, dict) and (folder / str(t.get("file", ""))).is_file()]
+    if not tracks:
+        logger.warning("assets/music/manifest.yaml lists no existing files — rendering without music")
+        return None
+    track = dict(tracks[video_id.int % len(tracks)])
+    track["path"] = str(folder / track["file"])
+    return track
 
 
-def _add_ducked_music(video_path: Path, music_path: Path, config: ChannelConfig, out_path: Path) -> None:
-    pre_gain = config.video.music_lufs - config.video.loudness_lufs
-    filt = (
-        f"[1:a]volume={pre_gain}dB[music];"
-        "[music][0:a]sidechaincompress=threshold=0.05:ratio=8:attack=20:release=250[ducked];"
-        "[0:a][ducked]amix=inputs=2:duration=first:dropout_transition=0[premix];"
-        f"[premix]loudnorm=I={config.video.loudness_lufs}:TP=-1.5:LRA=11[aout]"
-    )
-    run_ffmpeg(
-        [
-            "-i", str(video_path), "-stream_loop", "-1", "-i", str(music_path),
-            "-filter_complex", filt,
-            "-map", "0:v:0", "-map", "[aout]",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest",
-            str(out_path),
-        ]
-    )
-    probe(out_path)
+# --------------------------------------------------------------------------- #
+# rendering
+# --------------------------------------------------------------------------- #
+def _record(session: Session, video_id: uuid.UUID, stage: str, status: str, output: Path | None = None,
+            log: str | None = None) -> None:
+    session.add(Render(video_id=video_id, kind="longform", stage=stage, status=status,
+                       output_uri=str(output) if output else None, log=log,
+                       tool_versions={"encoder": pick_encoder()}))
 
 
-def _burn_subtitles(video_path: Path, ass_path: Path, config: ChannelConfig, out_path: Path) -> None:
-    """Windows absolute paths (the `C:` drive letter) don't survive being embedded in
-    an `ass=filename=...` filtergraph option value -- verified live that neither
-    backslash-escaping nor single-quoting the colon was reliably honored by this
-    ffmpeg build's filter-option parser, which kept mis-splitting on it. Sidestepping
-    entirely: run ffmpeg with its cwd set to the subtitle file's own directory and
-    reference it by bare filename, so there's no colon (or any special character) in
-    the filter string at all. `video_path`/`out_path` stay absolute, which is
-    unaffected by cwd.
-    """
-    codec_args = video_codec_args(config)
-    run_ffmpeg(
-        [
-            "-i", str(video_path),
-            "-vf", f"ass=filename={ass_path.name}",
-            *codec_args, "-c:a", "copy",
-            str(out_path),
-        ],
-        cwd=ass_path.parent,
-    )
-    probe(out_path)
+def _render_clip(image: Path, out: Path, vf: str, frames: int, config: ChannelConfig) -> None:
+    run_ffmpeg(["-i", str(image), "-filter_complex", vf, "-map", "[v]", "-frames:v", str(frames),
+                "-r", str(config.video.long_form.fps), *video_codec_args(config), "-an", str(out)])
 
 
 def run(session: Session, video_id: uuid.UUID) -> None:
@@ -175,54 +155,63 @@ def run(session: Session, video_id: uuid.UUID) -> None:
     if video is None or Status(video.status) != Status.ALIGNED:
         return
 
-    segments = list(
-        session.execute(select(Scene).filter_by(video_id=video_id).order_by(Scene.idx)).scalars()
-    )
-    if not segments:
-        raise ValueError(f"video {video_id}: no segments to assemble")
-
     config = get_config()
-    settings = get_settings()
-    asset_ids = {s.image_asset_id for s in segments if s.image_asset_id is not None}
-    assets_by_id = {
-        a.id: a for a in session.execute(select(Asset).filter(Asset.id.in_(asset_ids))).scalars()
-    }
-
+    scenes = list(session.execute(select(Scene).filter_by(video_id=video_id).order_by(Scene.idx)).scalars())
+    if not scenes or any(s.image_asset_id is None or s.start_s is None for s in scenes):
+        raise ValueError(f"video {video_id}: scenes are missing images or timing")
     wp = work_dir(video_id)
-    narration_path = wp / "narration.wav"
-    if not narration_path.exists():
-        raise FileNotFoundError(f"video {video_id}: narration audio not found at {narration_path}")
+    narration, words = wp / "narration.wav", wp / "words.json"
+    for needed in (narration, words):
+        if not needed.exists():
+            raise FileNotFoundError(f"video {video_id}: {needed.name} not found in {wp}")
 
-    stage = "slideshow"
+    assets = {a.id: a for a in session.execute(
+        select(Asset).where(Asset.id.in_({s.image_asset_id for s in scenes}))).scalars()}
+    size, fps = config.video.long_form.resolution, config.video.long_form.fps
+    motions = choose_motions([s.image_asset_id for s in scenes])
+    frames = frame_counts([(s.start_s, s.end_s) for s in scenes], fps)
+
+    stage = "clips"
     try:
-        slideshow = _build_slideshow(config, segments, assets_by_id, wp)
-        _record_render(session, video_id, stage, "success", slideshow)
-
-        stage = "narration"
-        with_narration = wp / "with_narration.mp4"
-        _mux_narration(slideshow, narration_path, with_narration)
-        _record_render(session, video_id, stage, "success", with_narration)
-
-        stage = "music"
-        music_track = _pick_music_track(settings.assets_dir)
-        current = with_narration
-        if music_track is not None:
-            current = wp / "with_music.mp4"
-            _add_ducked_music(with_narration, music_track, config, current)
-            _record_render(session, video_id, stage, "success", current)
-
-        stage = "subtitles"
-        subs = build_subtitles(segments, config)
-        ass_path = wp / "subtitles.ass"
-        subs.save(str(ass_path))
-        subs.save(str(output_dir(video_id) / "subtitles.srt"))
+        jobs = []
+        for scene, motion, n in zip(scenes, motions, frames, strict=True):
+            image = Path(assets[scene.image_asset_id].uri)
+            with Image.open(image) as im:
+                aspect = im.width / im.height
+            jobs.append((image, wp / f"clip_{scene.idx:04d}.mp4", clip_filter(motion, n, size, fps, aspect), n))
+        with ThreadPoolExecutor(max_workers=RENDER_WORKERS) as pool:
+            list(pool.map(lambda job: _render_clip(*job, config), jobs))
+        atomic_write_text(wp / "concat.txt", "".join(f"file '{out.name}'\n" for _, out, _, _ in jobs))
+        _record(session, video_id, stage, "success", log=f"{len(jobs)} clips")
 
         stage = "final"
-        final_path = output_dir(video_id) / "final.mp4"
-        _burn_subtitles(current, ass_path, config, final_path)
-        _record_render(session, video_id, stage, "success", final_path)
+        ass, srt = build_subtitles(json.loads(words.read_text(encoding="utf-8")), config,
+                                   resolution=size, size=config.subtitles.size)
+        ass.save(str(wp / "subtitles.ass"))
+        srt.save(str(output_dir(video_id) / "final.srt"))
+        font = font_path(config)
+        shutil.copy2(font, wp / font.name)  # libass finds it via fontsdir=. (cwd), no drive-letter colon
+
+        music = pick_music(video_id)
+        final = output_dir(video_id) / "final.mp4"
+        # Filter strings must not contain Windows paths ("C:" breaks option parsing — seen
+        # live), so ffmpeg runs inside the work dir and filters use bare file names.
+        run_ffmpeg([
+            "-f", "concat", "-safe", "0", "-i", "concat.txt", "-i", "narration.wav",
+            *(["-stream_loop", "-1", "-i", music["path"]] if music else []),
+            "-filter_complex", f"[0:v]ass=filename=subtitles.ass:fontsdir=.[v];{audio_graph(config, bool(music))}",
+            "-map", "[v]", "-map", "[a]", *video_codec_args(config), "-c:a", "aac", "-b:a", "192k",
+            "-t", f"{video.duration_s:.3f}", "-movflags", "+faststart", str(final),
+        ], cwd=wp)
+        rendered = float(probe(final)["format"]["duration"])
+        if abs(rendered - video.duration_s) > 0.5:
+            raise RuntimeError(f"final render is {rendered:.2f}s, narration is {video.duration_s:.2f}s")
+        _record(session, video_id, stage, "success", final)
     except Exception as exc:
-        _record_render(session, video_id, stage, "failed", log=str(exc))
+        _record(session, video_id, stage, "failed", log=str(exc)[-4000:])
         raise
 
+    if music:
+        video.video_metadata = {**(video.video_metadata or {}),
+                                "music": {k: music.get(k) for k in ("file", "title", "artist", "license", "credit")}}
     video.status = Status.ASSEMBLED

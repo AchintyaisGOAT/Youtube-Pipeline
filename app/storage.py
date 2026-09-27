@@ -38,6 +38,13 @@ def cache_dir() -> Path:
     return p
 
 
+def models_dir() -> Path:
+    """Downloaded model weights (Kokoro voice, Whisper) — fetched once, on first use."""
+    p = _storage_base() / "models"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write via a ``.tmp`` file + rename so a crash mid-write never leaves a partial file."""
     tmp = path.with_name(path.name + ".tmp")

@@ -1,89 +1,136 @@
-"""Shared subtitle building for assemble.py (burned-in ASS) and the SRT sidecar upload
-(DESIGN.md #36). One canonical SSAFile; ASS keeps the karaoke-style `\\k` tags for
-burning, SRT export strips them for the plain-text accessibility/SEO sidecar.
+"""Subtitles from real word timings (work_dir/words.json, written by the align stage),
+shared by the long-form render and the Shorts (README §6.4).
 
-True per-word Whisper timestamps aren't persisted anywhere — align.py only keeps
-segment-level `start_s`/`end_s` in the DB (no new column added for raw word timings,
-per WORK_MEDIA.md's "don't edit app/db.py without asking Foundation"). So "karaoke"
-here approximates word timing by splitting each segment's already-known duration evenly
-across its words: a reasonable highlight effect, not a claim of true forced-aligned
-per-word timing.
+- Captions are short bursts of `subtitles.words_per_caption` words, never crossing a
+  sentence end or a quote boundary. The burned-in ASS shows the word being spoken in
+  `highlight_color` (one event per word); the SRT sidecar has one plain event per caption.
+- The ASS canvas (PlayResX/PlayResY) is set to the video's own resolution, so `size` is
+  real pixels. Without it libass assumes a 384x288 canvas and scales everything up —
+  the old `size: 34` rendered ~127 px tall at 1080p.
+- Quote words are italic.
+- `window` cuts out one time range (a Short) and shifts it to start at 0.
 """
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pysubs2
+from PIL import ImageFont
 
-from app.config import ChannelConfig
-from app.db import Scene
+from app.config import REPO_ROOT, ChannelConfig, get_settings
 
-_ALIGNMENT_BY_POSITION = {
-    "bottom-left": 1,
-    "bottom-center": 2,
-    "bottom-right": 3,
-    "center": 5,
-    "top-center": 8,
-}
-
-#: Short word-bursts, not a full sentence sitting on screen for its whole duration --
-#: direct feedback on a real render: a full-sentence caption at a large font covered too
-#: much of the illustration. A TikTok/Reels-style caption (a few words at a time) shows
-#: far less text at once while covering the same ground over the segment's duration.
-_WORDS_PER_CAPTION = 4
+#: Keep a caption up through a gap shorter than this rather than flash it off and on.
+_HOLD_GAP_S = 0.6
+_SENTENCE_BREAK = re.compile(r"""[.!?;:]["'”’)\]]*$""")
+_UNSAFE = re.compile(r"[{}\\]")
+_ALIGNMENT = {"bottom-center": 2, "center": 5, "top-center": 8}
+_WINDOWS_FONT = Path(r"C:\Windows\Fonts\arial.ttf")
 
 
-def _word_windows(text: str, start_s: float, end_s: float) -> list[tuple[str, float, float]]:
-    words = text.split()
-    if not words:
-        return []
-    step = max(0.01, end_s - start_s) / len(words)
-    return [(w, start_s + i * step, start_s + (i + 1) * step) for i, w in enumerate(words)]
+def font_path(config: ChannelConfig) -> Path:
+    """config.subtitles.font_file, else the first assets/fonts/*.ttf, else Arial."""
+    configured = REPO_ROOT / config.subtitles.font_file
+    if configured.exists():
+        return configured
+    bundled = sorted(Path(get_settings().assets_dir).glob("fonts/*.ttf"))
+    return bundled[0] if bundled else _WINDOWS_FONT
 
 
-def _chunk(windows: list[tuple[str, float, float]], size: int) -> list[list[tuple[str, float, float]]]:
-    return [windows[i : i + size] for i in range(0, len(windows), size)]
+def font_family(path: Path) -> str:
+    """The family name libass matches on (read from the font file itself)."""
+    try:
+        return ImageFont.truetype(str(path), 10).getname()[0]
+    except OSError:
+        return "Arial"
 
 
-def _caption_text(chunk: list[tuple[str, float, float]], karaoke: bool) -> str:
-    """ASS `\\k` tags take centiseconds of *duration*, not absolute time."""
-    if not karaoke:
-        return " ".join(word for word, _, _ in chunk)
+def _ass_color(hex_color: str) -> tuple[pysubs2.Color, str]:
+    r, g, b = (int(hex_color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+    return pysubs2.Color(r, g, b), f"&H{b:02X}{g:02X}{r:02X}&"
+
+
+def captions(timeline: list[dict], words_per_caption: int) -> list[list[dict]]:
+    """Group each scene's timed words into short captions."""
+    groups: list[list[dict]] = []
+    for scene in timeline:
+        current: list[dict] = []
+        for word in scene["words"]:
+            if current and (len(current) >= words_per_caption or word["quote"] != current[-1]["quote"]):
+                groups.append(current)
+                current = []
+            current.append(word)
+            if _SENTENCE_BREAK.search(word["text"]):
+                groups.append(current)
+                current = []
+        if current:
+            groups.append(current)
+    return groups
+
+
+def _render(words: list[dict], highlight: int | None, color_tag: str) -> str:
     parts = []
-    for word, w_start, w_end in chunk:
-        centis = max(1, round((w_end - w_start) * 100))
-        parts.append(f"{{\\k{centis}}}{word}")
+    for i, word in enumerate(words):
+        text = _UNSAFE.sub("", word["text"])
+        if i == highlight:
+            text = f"{{\\c{color_tag}}}{text}{{\\c&HFFFFFF&}}"
+        if word["quote"]:
+            text = f"{{\\i1}}{text}{{\\i0}}"
+        parts.append(text)
     return " ".join(parts)
 
 
-def _hex_to_ass_color(hex_color: str) -> pysubs2.Color:
-    hex_color = hex_color.lstrip("#")
-    r, g, b = (int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
-    return pysubs2.Color(r, g, b)
+def build_subtitles(
+    timeline: list[dict],
+    config: ChannelConfig,
+    *,
+    resolution: tuple[int, int],
+    size: int,
+    window: tuple[float, float] | None = None,
+) -> tuple[pysubs2.SSAFile, pysubs2.SSAFile]:
+    """(burned-in ASS, plain SRT sidecar)."""
+    subs = config.subtitles
+    width, height = resolution
+    highlight_color, highlight_tag = _ass_color(subs.highlight_color)
 
+    ass = pysubs2.SSAFile()
+    ass.info.update({"PlayResX": str(width), "PlayResY": str(height), "WrapStyle": "0"})
+    style = pysubs2.SSAStyle(
+        fontname=font_family(font_path(config)), fontsize=size, bold=True,
+        primarycolor=pysubs2.Color(255, 255, 255), secondarycolor=highlight_color,
+        outlinecolor=pysubs2.Color(0, 0, 0), backcolor=pysubs2.Color(0, 0, 0, 128),
+        borderstyle=1, outline=max(2, round(size * 0.07)), shadow=0,
+        alignment=pysubs2.Alignment(_ALIGNMENT[subs.position]), marginl=round(width * 0.06), marginr=round(width * 0.06),
+        marginv=round(height * (0.07 if subs.position != "center" else 0)),
+    )
+    ass.styles["Default"] = style
+    srt = pysubs2.SSAFile()
 
-def build_subtitles(segments: list[Scene], config: ChannelConfig) -> pysubs2.SSAFile:
-    subs = pysubs2.SSAFile()
-    style = pysubs2.SSAStyle()
-    style.fontsize = config.subtitles.size
-    style.primarycolor = pysubs2.Color(255, 255, 255)
-    style.secondarycolor = _hex_to_ass_color(config.subtitles.highlight_color)
-    style.outlinecolor = pysubs2.Color(0, 0, 0)
-    style.borderstyle = 1
-    style.outline = 2
-    style.alignment = _ALIGNMENT_BY_POSITION.get(config.subtitles.position, 2)
-    subs.styles["Default"] = style
+    offset = window[0] if window else 0.0
+    groups = captions(timeline, subs.words_per_caption)
+    if window:
+        groups = [[w for w in g if window[0] <= w["start"] < window[1]] for g in groups]
+        groups = [g for g in groups if g]
 
-    for segment in segments:
-        if segment.start_s is None or segment.end_s is None:
+    for n, group in enumerate(groups):
+        start = group[0]["start"]
+        end = group[-1]["end"]
+        next_start = groups[n + 1][0]["start"] if n + 1 < len(groups) else None
+        if next_start is not None and 0 <= next_start - end < _HOLD_GAP_S:
+            end = next_start
+        if window:
+            end = min(end, window[1])
+        ms = lambda t: pysubs2.make_time(s=max(0.0, t - offset))  # noqa: E731
+
+        srt.events.append(pysubs2.SSAEvent(start=ms(start), end=ms(end), text=_render(group, None, "")))
+        if not subs.highlight_current_word:
+            ass.events.append(pysubs2.SSAEvent(start=ms(start), end=ms(end), text=_render(group, None, "")))
             continue
-        windows = _word_windows(segment.text, segment.start_s, segment.end_s)
-        for chunk in _chunk(windows, _WORDS_PER_CAPTION):
-            subs.events.append(
-                pysubs2.SSAEvent(
-                    start=pysubs2.make_time(s=chunk[0][1]),
-                    end=pysubs2.make_time(s=chunk[-1][2]),
-                    text=_caption_text(chunk, config.subtitles.karaoke),
-                    style="Default",
-                )
-            )
-    return subs
+        for i, word in enumerate(group):
+            word_end = group[i + 1]["start"] if i + 1 < len(group) else end
+            ass.events.append(pysubs2.SSAEvent(
+                start=ms(start if i == 0 else word["start"]), end=ms(word_end),
+                text=_render(group, i, highlight_tag),
+            ))
+    return ass, srt

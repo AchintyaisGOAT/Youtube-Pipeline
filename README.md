@@ -90,7 +90,7 @@ These drive every choice below. If one changes, revisit the stack.
 ### 3.2 External software (not pip)
 
 `uv`, `Git` and `FFmpeg` (Gyan build), installed with `winget` (§10).
-Model weights (Kokoro + Whisper, ~500 MB) download on the first run.
+Model weights (Kokoro ~350 MB + Whisper `small.en` ~480 MB) download into `data/models/` on the first run.
 
 ### 3.3 Accounts & keys
 
@@ -265,8 +265,8 @@ Other rules:
 |---|---|---|
 | Length | 3–8 min (fits the story) | ≤55 s each, 7 per video, cut at sentence ends |
 | Resolution | 1920×1080, 30 fps | 1080×1920, 30 fps |
-| Images | 5–7 s per scene, varied slow pan + zoom (in/out, left/right, up/down) | Re-rendered from the same scenes, panning across each image; not a crop of the long-form |
-| Subtitles | Burned in, bottom-center, 3–4 words at a time, current word highlighted (`#FFD23F`), timed by real word timestamps; size set in real pixels | Same style, larger, plus a title caption |
+| Images | ~5–7 s per scene, varied slow pan + zoom (in/out, left/right, up/down; a reused image never repeats its last motion); portrait images sit on a blurred copy of themselves instead of being cropped | Re-rendered from the same scenes, panning across each image; not a crop of the long-form |
+| Subtitles | Burned in, bottom-center, up to 4 words at a time (never across a sentence end or quote), current word highlighted (`#FFD23F`), quotes in italics, timed by Whisper word timestamps; 64 px | Same style, 84 px, plus a title caption |
 | Encoder | `h264_qsv`, fallback `libx264`, `yuv420p` pixel format (4:2:2 won't play everywhere) | Same |
 
 Pictures, narration and subtitles share one timeline. Every scene covers its speech *and* the pause
@@ -338,6 +338,7 @@ Folders:
 - `data/work/<video>/`: intermediate files (audio, timings, clips). **Deleted when the video is approved.**
 - `data/output/<video>/`: upload kits. **Kept 30 days after you mark the video uploaded, then deleted.**
 - `data/cache/`: downloaded images and API responses. Kept, so they can be reused.
+- `data/models/`: Kokoro and Whisper weights, downloaded once.
 - `data/logs/`: run logs.
 - `assets/`: your curated files: `music/` (+ `manifest.yaml`), `fonts/`, `branding/`.
 
@@ -466,6 +467,7 @@ Then:
 | 2026-09-27 | Content: linked articles picked from the most-mentioned links by the worker LLM (lead-section links were too generic). The script marks quotes `[QUOTE]` for the quote voice. The scene text split is deterministic Python (the LLM only writes image queries), so the checked narration can't drift; scenes stretch to at most 1.25× the max rather than leave a fragment under a second long. Tests can't reach the network (tests/conftest.py). |
 | 2026-09-27 | Check returns only the sentences it changes ({original, replacement, reason}); code applies them, so nothing changes unrecorded, and edits that can't be found, change nothing, or break markup are rejected. Checker model chosen by test: 4 false facts planted in a real script (wrong year, inflated number, wrong person, invented sentence). 3.5-flash-lite, 3.5-flash and 3.7-flash all caught 4/4, but only **3.5-flash** also caught the writer's real embellishments (e.g. "Lizzie bought a mansion" when Wikipedia says the sisters moved in), verified against the article. Trade-off: stricter edits, slightly flatter tone, ~50 s per check. |
 | 2026-09-27 | Images: Library of Congress dropped (Cloudflare 403). Live runs led to a title relevance check (Commons search matched theatre plans to "Andrew Borden on sofa"), exact-phrase topic queries, a 600 px floor (800 lost the real period portraits), a graphic filter (a murder victim's crime-scene photo was picked), and a cap of 20 AI illustrations per video to protect the image quota. The AI style asks for one full-frame scene with no border, panels or text. |
+| 2026-09-27 | Narration is synthesised per scene and each scene's time is measured from the audio, pause included, so the pictures can't drift from the voice; Emma reads `[QUOTE]` text. Whisper only places words inside a scene (the script's own words are displayed), so a mismatch can't spread. The subtitle canvas matches the video resolution, so sizes are real pixels. Clips render in parallel, then one final pass does subtitles + music ducking + loudness. |
 | 2026-09-27 | `awaiting_review` merged into `packaged` (same meaning). Encoder output forced to limited-range 4:2:0 (`-color_range tv`): archival JPEGs are full-range and QSV otherwise tags output `yuvj420p`. |
 
 ---
@@ -481,6 +483,6 @@ Then:
 | S3 | Discover (both sources), gate + relevance, rank with one video at a time | ✅ Done — verified live (1 Groq call gated 19 topics) |
 | S4 | Research (article + linked), script, check, scene plan | ✅ Done — verified live on Lizzie Borden (~40 s, 4 LLM calls) |
 | S5 | Images: archive chain → broader → AI → reuse, licenses | ✅ Done — verified live on Lizzie Borden (55 scenes in ~50 s) |
-| S6 | Narration (2 voices), Whisper timing, assembly (sync, subtitles, motion, music, Quick Sync) | ⬜ |
+| S6 | Narration (2 voices), Whisper timing, assembly (sync, subtitles, motion, music, Quick Sync) | ✅ Done — verified live: 7:54 Lizzie Borden video; narration 2.7 min, timing ~9 min (incl. one-time model download), render 92 s; −14.5 LUFS, locked sync |
 | S7 | Shorts, metadata, thumbnail, upload kit | ⬜ |
-| S8 | `ogh review`, cleanup, `ogh doctor` | ⬜ |
+| S8 | `ogh review`, cleanup (incl. deleting cached images no video has used for 90 days), `data/logs/`, `ogh doctor` | ⬜ |

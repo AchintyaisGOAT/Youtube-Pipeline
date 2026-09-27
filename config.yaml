@@ -75,14 +75,15 @@ voice:                          # README §6.2 — verify IDs against the kokoro
 
 alignment:
   whisper_model: "small.en"
-  mismatch_fallback_ratio: 0.15
 
-subtitles:
-  font_file: "assets/fonts/Inter-Regular.ttf"
-  size: 34
+subtitles:                      # README §6.4
+  font_file: "assets/fonts/Inter-Regular.ttf"   # else first assets/fonts/*.ttf, else Arial
+  size: 64                      # real pixels on the 1920x1080 long-form
+  shorts_size: 84               # real pixels on the 1080x1920 Shorts
+  words_per_caption: 4
   position: "bottom-center"
   highlight_color: "#FFD23F"
-  karaoke: true
+  highlight_current_word: true
 
 publish:                        # README §7 — goes into each upload kit's checklist
   category: "Education"
