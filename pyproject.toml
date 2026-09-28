@@ -1,7 +1,7 @@
 [project]
 name = "youtube-pipeline"
 version = "0.1.0"
-description = "Automated history/education YouTube video pipeline (long-form + Shorts)"
+description = "OurGreatHistory: trending history topic -> researched long-form video + Shorts + upload kit"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     # config
@@ -11,40 +11,29 @@ dependencies = [
     "tzdata",              # Windows has no system zoneinfo database
     # data (SQLite — single file, no server, no migrations)
     "sqlalchemy",
-    # http + resilience
+    # http + resilience + logging
     "httpx",
     "tenacity",
     "loguru",
-    # google / youtube
+    # LLMs (Groq's `openai` SDK is added in S2 with the routing that uses it)
     "google-genai",
-    "google-api-python-client",
-    "google-auth-oauthlib",
-    "google-auth-httplib2",
-    # local AI
-    #   NOTE: faster-whisper pulls CPU onnxruntime for its VAD; kokoro-onnx[gpu] is
-    #   *supposed* to pull onnxruntime-gpu but its marker checks
-    #   platform_machine == 'x86_64', which is never true on Windows (reports 'AMD64') —
-    #   so it silently never installs there. Declared explicitly below to work around
-    #   that. After `uv sync`, verify
-    #   `python -c "import onnxruntime as o; print(o.get_available_providers())"`
-    #   lists CUDAExecutionProvider; if not, `uv pip uninstall onnxruntime` (keep -gpu) —
-    #   both packages install into the same `onnxruntime` import path, so whichever
-    #   lands on disk last wins.
-    "kokoro-onnx[gpu]",
-    "onnxruntime-gpu; platform_system == 'Windows'",
+    # local AI, CPU only (README §2: no CUDA on this machine)
+    "kokoro-onnx",
     "soundfile",
     "faster-whisper",
-    "huggingface-hub",
     # media
     "pillow",
     "pysubs2",
+    "openai>=3.19.2",
 ]
+
+[project.scripts]
+ogh = "app.cli:main"
 
 [dependency-groups]
 dev = [
     "ruff",
     "pytest",
-    "pytest-asyncio",
 ]
 
 [build-system]
@@ -62,6 +51,5 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]

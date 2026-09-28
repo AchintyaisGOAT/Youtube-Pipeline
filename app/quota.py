@@ -1,46 +1,65 @@
-"""Daily API budget enforcement against `api_quota_ledger`.
+"""Daily free-tier budgets, counted from today's `llm_call` rows (README §5).
 
-Call ``check_and_increment()`` before every metered call (YouTube upload units, Gemini
-tokens). It raises ``QuotaExceeded`` instead of proceeding once today's budget for that
-API is spent — the orchestrator treats that as "retry later", not a hard failure.
+``check()`` runs before every provider call and raises ``QuotaExceeded`` once today's
+local cap for that provider is spent. ``QuotaExceeded`` is a ``RetryLater``: app/llm.py
+tries the fallback model, and if that's unavailable too the orchestrator leaves the
+video's status untouched and the next run resumes it — a limit never fails a video.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db import ApiQuotaLedger
+from app.db import LlmCall
 
-#: Conservative daily caps per external API (DESIGN.md §3.1 / §6E). Tune once real usage
-#: is known; a missing entry means "no cap enforced".
-DAILY_LIMITS: dict[str, int] = {
-    "youtube": 10_000,  # quota units/day
-    "gemini": 1_000_000,  # tokens/day, free-tier ballpark
+
+class RetryLater(Exception):
+    """A temporary condition (quota spent, provider rate-limited/overloaded). The stage
+    should be retried on a later run — never treated as a permanent failure."""
+
+
+class QuotaExceeded(RetryLater):
+    """Raised when a call would push today's usage for a provider past its local cap."""
+
+
+#: Local daily caps per provider (UTC day). A missing entry means "counted, no local cap"
+#: — the provider's own 429 still applies and surfaces as RetryLater via app/llm.py.
+#: Groq's free-tier numbers are documented (README §5); Gemini's per-model limits are
+#: only visible in the AI Studio dashboard, so they're left to the provider.
+DAILY_LIMITS: dict[str, dict[str, int]] = {
+    "groq": {"requests": 1_000, "tokens": 200_000},
 }
 
+#: Outcomes that actually reached the provider (and so count as usage).
+_COUNTED = ("ok", "error", "retry_later")
 
-class QuotaExceeded(Exception):
-    """Raised when a call would push today's usage for an API past its daily cap."""
+
+def usage_today(session: Session, provider: str) -> tuple[int, int]:
+    """(requests, tokens) sent to `provider` since 00:00 UTC."""
+    start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    requests, tokens = session.execute(
+        select(
+            func.count(LlmCall.id),
+            func.coalesce(func.sum(LlmCall.prompt_tokens), 0)
+            + func.coalesce(func.sum(LlmCall.response_tokens), 0),
+        ).where(
+            LlmCall.provider == provider,
+            LlmCall.outcome.in_(_COUNTED),
+            LlmCall.created_at >= start,
+        )
+    ).one()
+    return requests, tokens
 
 
-def check_and_increment(session: Session, api: str, units: int = 0, tokens: int = 0) -> None:
-    today = date.today()
-    row = session.execute(select(ApiQuotaLedger).filter_by(api=api, day=today)).scalar_one_or_none()
-    used_units = row.units_used if row else 0
-    used_tokens = row.tokens_used if row else 0
-
-    limit = DAILY_LIMITS.get(api)
-    if limit is not None:
-        if units and used_units + units > limit:
-            raise QuotaExceeded(f"{api} daily unit budget exhausted ({used_units + units} > {limit})")
-        if tokens and used_tokens + tokens > limit:
-            raise QuotaExceeded(f"{api} daily token budget exhausted ({used_tokens + tokens} > {limit})")
-
-    if row is None:
-        session.add(ApiQuotaLedger(api=api, day=today, units_used=units, tokens_used=tokens))
-    else:
-        row.units_used = used_units + units
-        row.tokens_used = used_tokens + tokens
+def check(session: Session, provider: str) -> None:
+    limits = DAILY_LIMITS.get(provider)
+    if not limits:
+        return
+    requests, tokens = usage_today(session, provider)
+    if "requests" in limits and requests >= limits["requests"]:
+        raise QuotaExceeded(f"{provider}: {requests} requests today (cap {limits['requests']})")
+    if "tokens" in limits and tokens >= limits["tokens"]:
+        raise QuotaExceeded(f"{provider}: {tokens} tokens today (cap {limits['tokens']})")

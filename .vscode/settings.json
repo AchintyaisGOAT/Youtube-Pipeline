@@ -6,6 +6,5 @@
     "editor.formatOnSave": true,
     "editor.codeActionsOnSave": { "source.organizeImports": "explicit" }
   },
-  "yaml.schemas": { "./config.schema.json": ["config.yaml", "config.example.yaml"] },
   "files.eol": "\n"
 }

@@ -7,9 +7,6 @@ token.json
 *.pem
 *.key
 
-# ---- Local config (from config.example.yaml) ----
-config.yaml
-
 # ---- Data / media / weights (large, regenerable) ----
 data/
 work/

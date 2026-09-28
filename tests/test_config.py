@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.config import ChannelConfig, load_channel_config
+from app.config import ChannelConfig, load_config
 
 
 def test_defaults_validate():
@@ -11,28 +11,37 @@ def test_defaults_validate():
     assert cfg.video.encoder == "auto"
 
 
+def test_committed_config_yaml_validates():
+    cfg = load_config("config.yaml")
+    assert cfg.channel.name == "OurGreatHistory"
+    assert cfg.llm.checker != cfg.llm.writer
+
+
 def test_rejects_unknown_keys():
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         ChannelConfig.model_validate({"not_a_real_field": True})
 
 
 def test_rejects_bad_timezone():
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         ChannelConfig.model_validate({"timezone": "Not/AZone"})
 
 
 def test_rejects_bad_encoder():
-    with pytest.raises(Exception):
-        ChannelConfig.model_validate({"video": {"encoder": "vp9"}})
+    with pytest.raises(ValueError):
+        ChannelConfig.model_validate({"video": {"encoder": "h264_nvenc"}})
 
 
-def test_load_channel_config_missing_file(tmp_path):
+def test_rejects_checker_same_as_writer():
+    with pytest.raises(ValueError):
+        ChannelConfig.model_validate({"llm": {"writer": "m", "checker": "m"}})
+
+
+def test_rejects_bad_schedule_slot():
+    with pytest.raises(ValueError):
+        ChannelConfig.model_validate({"publish": {"schedule": {"shorts": ["every monday"]}}})
+
+
+def test_load_config_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError):
-        load_channel_config(tmp_path / "nope.yaml")
-
-
-def test_load_channel_config_roundtrip(tmp_path):
-    p = tmp_path / "config.yaml"
-    p.write_text("config_version: 1\ntimezone: America/New_York\n", encoding="utf-8")
-    cfg = load_channel_config(p)
-    assert cfg.config_version == 1
+        load_config(tmp_path / "nope.yaml")

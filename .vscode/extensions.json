@@ -5,6 +5,6 @@
     "redhat.vscode-yaml",
     "tamasfe.even-better-toml",
     "mtxr.sqltools",
-    "mtxr.sqltools-driver-pg"
+    "mtxr.sqltools-driver-sqlite"
   ]
 }

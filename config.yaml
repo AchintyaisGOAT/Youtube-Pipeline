@@ -1,0 +1,105 @@
+# Channel + behaviour settings. Committed — no secrets here (those go in .env).
+# Validated on every run by app/config.py; section refs point at README.md.
+
+timezone: "America/New_York"
+
+channel:
+  name: "OurGreatHistory"
+  handle: "@OurGreatHistory"
+  audience: "curious people who want to be entertained, not lectured at"
+  tone: >-
+    energetic, fun, fast-paced, a little cheeky -- like a friend telling you the wildest true
+    story they know, never a dry lecture; always accurate and sourced
+  language: "en-US"
+
+topics:                         # README §4.3
+  in_scope:
+    - "world history pre-2000"
+    - "history of science and technology"
+  auto_veto:                    # skipped, no human involved; everything else proceeds
+    - "events within the last 10 years"
+    - "active elections / party politics"
+    - "ongoing armed conflicts"
+    - "living-person allegations or controversy"
+    - "medical, legal, or financial advice"
+
+discovery:                      # README §4.1 — runs when no passed topic is waiting
+  sources: ["trending", "on_this_day"]
+  max_candidates: 20
+  min_relevance: 6              # gate relevance (0-10) needed to pass
+  max_topic_age_days: 7         # unused passed topics expire after this
+
+llm:                            # README §5 — confirm IDs/limits in AI Studio + Groq console
+  writer: "gemini-3.8-flash"    # script + metadata
+  writer_fallback: "openai/gpt-oss-120b"
+  checker: "gemini-3.5-flash"   # script vs articles; must differ from writer (see README §12)
+  worker: "openai/gpt-oss-120b" # gate + scene plan
+  worker_fallback: "gemini-3.5-flash-lite"
+  image: "gemini-3.1-flash-image"   # AI illustration fallback only
+
+research:
+  linked_articles: 3            # extra Wikipedia articles linked from the lead section
+
+video:                          # README §6.4
+  long_form:
+    seconds_min: 180
+    seconds_max: 480
+    resolution: [1920, 1080]
+    fps: 30
+  shorts:
+    per_video: 7
+    max_seconds: 55
+    resolution: [1080, 1920]
+    fps: 30
+  scene_seconds_min: 5
+  scene_seconds_max: 7
+  loudness_lufs: -14
+  music_lufs: -18
+  encoder: "auto"               # auto = h264_qsv if it works, else libx264
+
+images:                         # README §6.1
+  sources: ["wikimedia_commons", "smithsonian"]   # Smithsonian needs SMITHSONIAN_API_KEY
+  ai_fallback: true             # false = never generate AI images
+  ai_max_per_video: 20          # beyond this, scenes reuse images instead
+  ai_style: >-                  # a live test drew two framed panels and a word, hence the last line
+    Vintage historical illustration in the style of a period engraving or print, muted
+    colors, fine linework. One single full-frame scene filling the whole 16:9 widescreen
+    image: no border, no frame, no panels, no text or lettering.
+  max_images: 80
+
+voice:                          # README §6.2 — verify IDs against the kokoro-onnx voice list
+  primary: "bm_george"
+  quotes: "bf_emma"
+  words_per_second: 2.6
+  paragraph_pause_ms: 400
+
+alignment:
+  whisper_model: "small.en"
+
+subtitles:                      # README §6.4
+  font_file: "assets/fonts/Inter-Regular.ttf"   # else first assets/fonts/*.ttf, else Arial
+  size: 64                      # real pixels on the 1920x1080 long-form
+  shorts_size: 84               # real pixels on the 1080x1920 Shorts
+  words_per_caption: 4
+  position: "bottom-center"
+  highlight_color: "#FFD23F"
+  highlight_current_word: true
+
+effects:                        # README §6.5 — sound effects + on-screen text
+  sfx: true                     # needs assets/sfx/ + manifest.yaml (`uv run ogh assets`)
+  sfx_max_share: 0.3            # at most 30% of scenes get an effect, never two in a row
+  sfx_volume_db: -8             # effects sit under the narration
+  overlays: true                # place/date labels, number callouts, chapter cards
+  overlay_max_share: 0.25
+  max_chapters: 6
+
+publish:                        # README §7 — goes into each upload kit's checklist
+  category: "Education"
+  made_for_kids: false
+  schedule:
+    long_form: ["Tue 15:00", "Fri 15:00"]
+    shorts: ["daily 12:00"]
+
+ops:
+  min_free_gb: 15
+  keep_output_days: 30
