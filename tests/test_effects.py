@@ -61,8 +61,14 @@ def test_write_manifests_keeps_edits_adds_new_files_and_drops_missing(assets_dir
     effects = yaml.safe_load((assets_dir / "sfx" / "manifest.yaml").read_text(encoding="utf-8"))["effects"]
     assert [e["file"] for e in effects] == ["Mystery Thing.wav", "Whoosh Swish.wav"]
     assert effects[1]["title"] == "My title" and effects[1]["gain_db"] == -3  # your edit survives
-    assert report == {"music": ["Calm Piano.wav"], "sfx": ["Mystery Thing.wav"], "untagged": ["Mystery Thing.wav"]}
+    assert report == {"music": ["Calm Piano.wav"], "sfx": ["Mystery Thing.wav"], "untagged": ["Mystery Thing.wav"],
+                      "unlicensed": ["Calm Piano.wav"]}
     assert assets.sfx_tags() == ["whoosh"]  # untagged effects are unusable
+    assert assets.pick_music(__import__("uuid").uuid4()) is None  # and so are unlicensed tracks
+    music = assets_dir / "music" / "manifest.yaml"
+    tracks = yaml.safe_load(music.read_text(encoding="utf-8"))["tracks"]
+    tracks[0]["license"] = assets.YOUTUBE_LIBRARY_LICENSE
+    music.write_text(yaml.safe_dump({"tracks": tracks}), encoding="utf-8")
     assert assets.pick_music(__import__("uuid").uuid4())["title"] == "Calm Piano"
     assert assets.pick_sfx("whoosh", 3)["path"].endswith("Whoosh Swish.wav")
     assert assets.pick_sfx("thunder", 0) is None
@@ -129,7 +135,8 @@ def test_ambient_effects_need_the_scene_to_mention_them():
 def test_labels_must_name_a_place_or_date():
     ok = {"kind": "label", "text": "FALL RIVER"}
     assert segment.overlay_is_grounded(ok, "They reached Fall River at dawn.", "")
-    assert not segment.overlay_is_grounded({"kind": "label", "text": "FRONT DOOR"}, "He found the front door locked.", "")
+    front_door = {"kind": "label", "text": "FRONT DOOR"}
+    assert not segment.overlay_is_grounded(front_door, "He found the front door locked.", "")
     assert segment.overlay_is_grounded({"kind": "label", "text": "AUGUST 1892"}, "In August 1892 it began.", "")
 
 

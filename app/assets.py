@@ -10,7 +10,12 @@ assets/sfx/manifest.yaml:
       - {file: Whoosh Swish.mp3, tags: [whoosh], title: Whoosh Swish, credit: "", gain_db: 0}
 
 `credit` is only needed for tracks/effects whose license asks for attribution; it goes
-into the video description.
+into the video description, which always names the track used.
+
+A new track's title and artist come from the file's own tags. Its `license` starts empty
+unless the tags identify it (Kevin MacLeod: CC BY 4.0, with the credit text his license
+requires), and **a track with no license is never used**: a wrong default once labelled a
+CC BY track "no attribution required" and a monetization-restricted one as safe.
 """
 
 from __future__ import annotations
@@ -23,9 +28,11 @@ import yaml
 from loguru import logger
 
 from app.config import get_settings
+from app.ffmpeg import probe
 
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".ogg", ".m4a", ".flac")
-DEFAULT_LICENSE = "YouTube Audio Library — no attribution required"
+#: What to write for a YouTube Audio Library track marked "attribution not required".
+YOUTUBE_LIBRARY_LICENSE = "YouTube Audio Library — no attribution required"
 
 #: The sound-effect vocabulary, with the file-name words each tag is guessed from.
 SFX_TAGS: dict[str, tuple[str, ...]] = {
@@ -98,7 +105,29 @@ def _load(folder: Path, key: str) -> list[dict]:
 
 
 def music_tracks() -> list[dict]:
-    return _load(_folder("music"), "tracks")
+    """Tracks with a license filled in — the only ones a video may use."""
+    return [t for t in _load(_folder("music"), "tracks") if str(t.get("license") or "").strip()]
+
+
+def _file_tags(path: Path) -> dict[str, str]:
+    try:
+        tags = probe(path).get("format", {}).get("tags", {})
+    except Exception:  # unreadable tags just mean no guess
+        return {}
+    return {k.lower(): str(v).strip() for k, v in tags.items()}
+
+
+def new_track(path: Path) -> dict:
+    """A manifest entry for a new music file, filled in from its tags where they're certain."""
+    tags = _file_tags(path)
+    title, artist = tags.get("title") or _title(path.name), tags.get("artist", "")
+    entry = {"file": path.name, "title": title, "artist": artist, "license": "", "credit": ""}
+    if artist.lower() == "kevin macleod":
+        entry["license"] = "CC BY 4.0 (incompetech.com)"
+        entry["credit"] = (f'"{title}" Kevin MacLeod (incompetech.com)\n'
+                           "Licensed under Creative Commons: By Attribution 4.0 License\n"
+                           "http://creativecommons.org/licenses/by/4.0/")
+    return entry
 
 
 def sound_effects() -> list[dict]:
@@ -143,8 +172,9 @@ def _title(file_name: str) -> str:
 def write_manifests() -> dict[str, list[str]]:
     """Create/update assets/music and assets/sfx manifests from the files present. Existing
     entries (your edits) are kept; new files are added; entries whose file is gone are
-    dropped. Returns {"music": new files, "sfx": new files, "untagged": effects needing tags}."""
-    report: dict[str, list[str]] = {"music": [], "sfx": [], "untagged": []}
+    dropped. Returns {"music": new files, "sfx": new files, "untagged": effects needing tags,
+    "unlicensed": tracks needing a license}."""
+    report: dict[str, list[str]] = {"music": [], "sfx": [], "untagged": [], "unlicensed": []}
     for name, key in (("music", "tracks"), ("sfx", "effects")):
         folder = _folder(name)
         folder.mkdir(parents=True, exist_ok=True)
@@ -159,12 +189,13 @@ def write_manifests() -> dict[str, list[str]]:
             entry = existing.get(path.name)
             if entry is None:
                 report[name].append(path.name)
-                entry = ({"file": path.name, "title": _title(path.name), "artist": "", "license": DEFAULT_LICENSE,
-                          "credit": ""} if name == "music" else
+                entry = (new_track(path) if name == "music" else
                          {"file": path.name, "tags": guess_tags(path.name), "title": _title(path.name),
                           "credit": "", "gain_db": 0})
             if name == "sfx" and not entry.get("tags"):
                 report["untagged"].append(path.name)
+            if name == "music" and not str(entry.get("license") or "").strip():
+                report["unlicensed"].append(path.name)
             entries.append(entry)
         manifest.write_text(yaml.safe_dump({key: entries}, sort_keys=False, allow_unicode=True), encoding="utf-8")
         logger.info("{}: {} entries", manifest, len(entries))

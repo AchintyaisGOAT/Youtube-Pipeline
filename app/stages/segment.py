@@ -1,20 +1,22 @@
-"""Scene plan (README §4.1 step 7): the checked script -> `scene` rows of roughly
-`video.scene_seconds_min`–`scene_seconds_max` of narration, each with an image search query.
+"""Scene plan (README §4.1 step 8): the checked script -> `scene` rows of roughly
+`video.scene_seconds_min`–`scene_seconds_max` of narration, each showing the image its
+passage was written over.
 
 The *text* split is deterministic Python, never an LLM, so the narration can't be
 altered between the check stage and the voice:
-- `[SHORT]` spans are cut out first; scenes never cross a span edge, and every scene in
-  one gets `in_short_span` (the contract the Shorts stage reads).
+- The script is cut at every `[IMG n]` mark and `[SHORT]` edge first; scenes never cross
+  one. Every scene of a passage shows that passage's image (a passage longer than one
+  scene shows it again with a different camera motion), and every scene in a Short span
+  gets `in_short_span` (the contract the Shorts stage reads). The marks are not spoken.
 - `[QUOTE]...[/QUOTE]` blocks stay whole inside one scene, tags kept for the voice stage.
 - Sentences are grouped up to the scene word budget (seconds × words/second). A scene
   never closes below the minimum (no image flashes for under a second); a sentence well
   over budget is split into balanced pieces at commas/semicolons/dashes.
 
-The worker LLM then plans, in one call, each scene's archive search query, an optional
-sound-effect cue (only tags the local library has) and optional on-screen text (a
-place/date label, a number callout or a chapter card). `clean_extras` enforces the
-limits and rejects on-screen text the narration/sources don't back up. If that call
-fails outright, a proper-noun heuristic fills in the queries and there are no extras.
+The worker LLM then plans, in one call, each scene's optional sound-effect cue (only tags
+the local library has) and optional on-screen text (a place/date label, a number callout
+or a chapter card). `clean_extras` enforces the limits and rejects on-screen text the
+narration/sources don't back up. If that call fails outright, there are no extras.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ from app.status import Status
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "segment.md"
 
-_SHORT_SPAN = re.compile(r"\[SHORT\](.*?)\[/SHORT\]", re.DOTALL)
+_CUTS = re.compile(r"\[(/?)SHORT\]|\[IMG (\d+)\]")
 _QUOTE = re.compile(r"\[QUOTE\].*?\[/QUOTE\]", re.DOTALL)
 _TAGS = re.compile(r"\[/?QUOTE\]")
 #: Words a cut must not come right after ("the Ides of | March").
@@ -44,35 +46,8 @@ _GLUE_WORDS = {"a", "an", "the", "of", "to", "in", "on", "at", "by", "for", "fro
 #: How far past the max a scene may run rather than be cut: 1.25 x 7 s ~ 9 s.
 SCENE_STRETCH = 1.25
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
-#: A run of capitalized words — a decent proxy for "the name/place/event this sentence
-#: is about", which makes a much better image-search query than the full sentence.
-_PROPER_NOUN_RUN = re.compile(r"(?:[A-Z][a-zA-Z'.-]*\s*){1,4}")
-#: Common sentence-initial words that end up capitalized without being a real proper
-#: noun (verified live: "The weapon was likely..." produced the query "The", which
-#: matched a random church photo on Wikimedia Commons).
-_SENTENCE_INITIAL_STOPWORDS = {
-    "the", "a", "an", "it", "this", "that", "these", "those", "while", "instead",
-    "however", "although", "when", "where", "who", "what", "why", "how", "but",
-    "and", "yet", "so", "if", "then", "there", "here", "some", "many", "most",
-    "few", "each", "every",
-}
-
-
 def _words(text: str) -> int:
     return len(_TAGS.sub(" ", text).split())
-
-
-def fallback_query(text: str, topic: str) -> str:
-    """Heuristic query when the LLM can't be used: the longest proper-noun run."""
-    text = _TAGS.sub(" ", text)
-    candidates = [m.strip() for m in _PROPER_NOUN_RUN.findall(text) if len(m.strip()) > 2]
-    # A multi-word run ("Andrew Borden") is almost always a real name/place; a lone
-    # capitalized word is just as likely to be sentence-initial capitalization.
-    multi_word = [c for c in candidates if " " in c]
-    if multi_word:
-        return max(multi_word, key=len)
-    single_word = [c for c in candidates if c.lower() not in _SENTENCE_INITIAL_STOPWORDS]
-    return max(single_word, key=len) if single_word else topic
 
 
 def _merge(pieces: list[str], min_words: float, max_words: float) -> list[str]:
@@ -125,7 +100,8 @@ def _split_long(sentence: str, min_words: float, max_words: float) -> list[str]:
         near = [b for b in breaks if b - prev >= min_words / 2 and n - b >= min_words / 2
                 and abs(b - target) <= max_words / 3]
         if not near:  # no clause break close by: nearest word gap that doesn't split a name/phrase
-            near = [b for b in range(max(prev + 1, target - int(max_words / 3)), min(n, target + int(max_words / 3) + 1))
+            reach = int(max_words / 3)
+            near = [b for b in range(max(prev + 1, target - reach), min(n, target + reach + 1))
                     if _clean_cut(words, b)]
         cut = min(near, key=lambda b: abs(b - target)) if near else target
         if cut > prev:
@@ -151,18 +127,25 @@ def _units(text: str, min_words: float, max_words: float) -> list[str]:
     return units
 
 
-def plan_scenes(script: str, min_words: float, max_words: float) -> list[tuple[str, bool]]:
-    """(scene text, in_short_span) in narration order, [SHORT] tags removed."""
-    out: list[tuple[str, bool]] = []
-    cursor = 0
-    parts: list[tuple[str, bool]] = []
-    for match in _SHORT_SPAN.finditer(script):
-        parts.append((script[cursor : match.start()], False))
-        parts.append((match.group(1), True))
+def plan_scenes(script: str, min_words: float, max_words: float) -> list[tuple[str, bool, int]]:
+    """(scene text, in_short_span, image number) in narration order, [SHORT] tags and
+    [IMG n] marks removed. Text before the first mark takes the first mark's image."""
+    parts: list[tuple[str, bool, int]] = []
+    cursor, in_short, image = 0, False, 0
+    for match in _CUTS.finditer(script):
+        parts.append((script[cursor : match.start()], in_short, image))
+        if match.group(2) is not None:
+            image = int(match.group(2))
+        else:
+            in_short = not match.group(1)
         cursor = match.end()
-    parts.append((script[cursor:], False))
-    for text, in_short in parts:
-        out += [(scene, in_short) for scene in _merge(_units(text, min_words, max_words), min_words, max_words)]
+    parts.append((script[cursor:], in_short, image))
+    first = next((n for _, _, n in parts if n), 0)
+    out: list[tuple[str, bool, int]] = []
+    for text, short, n in parts:
+        if text.strip():
+            out += [(scene, short, n or first)
+                    for scene in _merge(_units(text, min_words, max_words), min_words, max_words)]
     return out
 
 
@@ -245,13 +228,11 @@ def clean_extras(raw: list[dict], texts: list[str], sources: str, allowed_sfx: s
     return sfx, overlays
 
 
-def _plan_extras(session: Session, video: Video, texts: list[str]) -> tuple[list, list, list]:
-    """(image query, sfx, overlay) per scene from one worker call. If the call fails
-    outright: heuristic queries, no sfx, no overlays."""
+def _plan_extras(session: Session, video: Video, texts: list[str]) -> tuple[list, list]:
+    """(sfx, overlay) per scene from one worker call. If the call fails outright: none."""
     config = get_config()
     topic = session.get(Topic, video.topic_id) if video.topic_id else None
     summary = " ".join(((topic.summary if topic else "") or "").split())[:300]
-    fallback = [fallback_query(text, video.title or "") for text in texts]
     allowed_sfx = set(assets.sfx_tags()) if config.effects.sfx else set()
     prompt = PROMPT_PATH.read_text(encoding="utf-8").format(
         title=video.title,
@@ -265,8 +246,8 @@ def _plan_extras(session: Session, video: Video, texts: list[str]) -> tuple[list
     except RetryLater:
         raise
     except Exception as exc:
-        logger.warning("scene plan: LLM failed, using heuristic queries and no extras: {}", exc)
-        return fallback, [None] * len(texts), [None] * len(texts)
+        logger.warning("scene plan: LLM failed, no sound effects or on-screen text: {}", exc)
+        return [None] * len(texts), [None] * len(texts)
 
     by_id: dict[int, dict] = {}
     for entry in result.get("scenes", []):
@@ -275,10 +256,8 @@ def _plan_extras(session: Session, video: Video, texts: list[str]) -> tuple[list
         except (TypeError, ValueError, AttributeError):
             continue
     raw = [by_id.get(i, {}) for i in range(1, len(texts) + 1)]
-    queries = [str(r.get("query") or "").strip() or fallback[i] for i, r in enumerate(raw)]
     sources = " ".join(a.get("text", "") for a in (video.research or {}).get("articles", []))
-    sfx, overlays = clean_extras(raw, texts, f"{sources} {video.title or ''}", allowed_sfx, config)
-    return queries, sfx, overlays
+    return clean_extras(raw, texts, f"{sources} {video.title or ''}", allowed_sfx, config)
 
 
 def run(session: Session, video_id: uuid.UUID) -> None:
@@ -288,16 +267,23 @@ def run(session: Session, video_id: uuid.UUID) -> None:
     if not video.script:
         raise ValueError(f"video {video_id}: no script to segment")
 
+    images = {item["n"]: item for item in (video.research or {}).get("images", [])}
+    if not images:
+        raise ValueError(f"video {video_id}: no image inventory (send it back to pictures)")
     config = get_config()
     wps = config.voice.words_per_second
     planned = plan_scenes(video.script, config.video.scene_seconds_min * wps, config.video.scene_seconds_max * wps)
-    queries, sfx, overlays = _plan_extras(session, video, [text for text, _ in planned])
+    missing = sorted({n for _, _, n in planned if n not in images})
+    if missing:
+        raise ValueError(f"video {video_id}: the script marks image(s) {missing} that aren't in the inventory")
+    sfx, overlays = _plan_extras(session, video, [text for text, _, _ in planned])
 
     for scene in list(video.scenes):  # a re-run replans from scratch
         session.delete(scene)
     session.flush()
-    for idx, ((text, in_short), query, cue, overlay) in enumerate(zip(planned, queries, sfx, overlays, strict=True)):
-        session.add(Scene(video_id=video_id, idx=idx, text=text, image_query=query[:400], in_short_span=in_short,
+    for idx, ((text, in_short, n), cue, overlay) in enumerate(zip(planned, sfx, overlays, strict=True)):
+        session.add(Scene(video_id=video_id, idx=idx, text=text, image_query=images[n]["shows"][:400],
+                          image_asset_id=uuid.UUID(images[n]["asset_id"]), in_short_span=in_short,
                           sfx=cue, overlay=overlay))
     session.flush()
     session.expire(video, ["scenes"])  # the list read above for the delete is stale now

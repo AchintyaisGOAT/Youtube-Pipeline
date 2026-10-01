@@ -5,7 +5,8 @@ The checker returns only the sentences that need a fix — {original, replacemen
 — and this code applies them. It never hands back a whole rewritten script, so nothing
 can change without being recorded. A change is rejected (kept in the record, not
 applied) when its original can't be found verbatim, when it changes nothing, or when
-applying it would break the [SHORT]/[QUOTE] markup. Applied and rejected changes are
+applying it would break the [SHORT]/[QUOTE] markup or add, drop or move an [IMG n] mark
+(the pictures are fixed; only the words over them change). Applied and rejected changes are
 kept in ``video.research["check"]`` for `ogh review`.
 
 A checked script that lost more than 40% of its words means the check itself went
@@ -22,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app import llm
 from app.db import Video
-from app.stages.script import articles_block, validate_markup, word_count
+from app.stages.script import articles_block, marks, validate_markup, word_count
 from app.status import Status
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "check.md"
@@ -52,6 +53,9 @@ def apply_changes(script: str, changes: list) -> tuple[str, list[dict], list[dic
             validate_markup(candidate)
         except ValueError as exc:
             rejected.append({**record, "why": f"would break markup: {exc}"})
+            continue
+        if marks(candidate) != marks(script):
+            rejected.append({**record, "why": "would add, drop or move an [IMG n] image mark"})
             continue
         script = candidate
         applied.append(record)

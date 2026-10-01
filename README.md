@@ -1,13 +1,11 @@
-# OurGreatHistory Pipeline: Design & Reference (`testing` branch)
+# PantherTellsHistory Pipeline: Design & Reference
 
-The single reference for this branch. It covers what the pipeline is, every decision and the reason
+The single reference for this repo. It covers what the pipeline is, every decision and the reason
 for it, the stack, the full workflow, and setup. **Update this file when a decision changes.** Don't start
 new docs. The decision log (§12) records what changed and when.
 
-> **Branch status:** this is the *target* design for the `testing` branch, adapted from the
-> OurGreatHistory (OGH) design. It isn't fully built yet; §13 tracks what is.
-> `main` still has the original design (Gemini-only, AI images, YouTube API upload,
-> Task Scheduler). This branch is merged into `main` only after it's reviewed and approved.
+> **Status:** `main` is the only branch. The design was adapted from the OGH design (the channel
+> was then called OurGreatHistory). It isn't fully built yet; §13 tracks what is.
 
 - [1. Overview](#1-overview)
 - [2. Fixed constraints](#2-fixed-constraints)
@@ -29,22 +27,28 @@ new docs. The decision log (§12) records what changed and when.
 
 A local tool that turns a history topic into a finished YouTube package:
 
-- one **long-form video** (3–8 min, 1920×1080),
-- **7 Shorts** made from it (≤55 s each, 1080×1920),
+- one **long-form video** (3–8 min, as long as its images can carry; 1920×1080),
+- **3–7 Shorts** made from it (≤55 s each, 1080×1920),
 - plus a thumbnail, subtitles and ready-to-paste metadata.
 
 A human reviews every video, then uploads it to YouTube by hand.
 
-- **Channel:** OurGreatHistory (`@OurGreatHistory`). Confirm the handle is free when creating the channel.
+- **Channel:** PantherTellsHistory (`@PantherTellsHistory`).
 - **Niche:** world history and the history of science/technology, before 2000.
 - **Tone:** energetic, fun, a little cheeky. Like a friend telling you the wildest true story they
   know: never a dry lecture, always accurate and sourced.
-- **Volume:** ~6 long-form videos and ~42 Shorts per month, one video in progress at a time.
+- **Topics are chosen by pictures:** the archives decide what can be shown, so they decide what
+  gets made. Topics are measured by how many usable public-domain images exist for them, and made
+  in **batches of 5** (`discovery.batch_size`).
+- **Every picture shows what the narrator is talking about.** Images are gathered and checked
+  first; the script is then written around them. No filler, no AI images.
 
 ```
-discover → gate → rank → research (Wikipedia) → script → check against sources
-  → scene plan → images → narration → word timing → assemble long-form → render Shorts
-  → metadata + thumbnail → upload kit → human review → manual upload to YouTube
+discover → gate → survey (count free images) → rank (batch of 5) → per video:
+  research (Wikipedia) → pictures (gather + check) → script written around the pictures
+  → check against sources → scenes (cut at the image marks) → narration → word timing
+  → assemble long-form → metadata → thumbnail → Shorts → upload kit
+  → human review → manual upload to YouTube
 ```
 
 ---
@@ -58,7 +62,7 @@ These drive every choice below. If one changes, revisit the stack.
 | Machine | Laptop with an Intel Core Ultra 5 125H (14 cores), Intel Arc integrated graphics, 16 GB RAM | No CUDA, so local AI runs on CPU. Video encoding uses Intel Quick Sync (`h264_qsv`). No local LLM or local image generation (too slow). |
 | Budget | **$0**: free tiers only | Every cloud service must have a permanent free tier. Rate limits are the constraint, not price. |
 | Running | **Manual**: one command when you choose | No scheduler and no background service. Every run is safe to stop and restart. |
-| Visuals | Public-domain / open archive images first | AI illustrations only as a fallback when the archives have nothing (§6.1). |
+| Visuals | Public-domain / CC0 archive images only | Gathered and checked before the script, which is written around them (§6.1). No AI images. |
 | Upload | **Manual** via YouTube Studio | No YouTube API, no Google Cloud project, no OAuth (§7). |
 | Language | English (US) | |
 
@@ -99,7 +103,8 @@ Model weights (Kokoro ~350 MB + Whisper `small.en` ~480 MB) download into `data/
 | `GEMINI_API_KEY` | aistudio.google.com | Yes |
 | `GROQ_API_KEY` | console.groq.com | Yes |
 | `WIKIMEDIA_CONTACT` | You choose it; it must be a **URL** (e.g. the channel or repo page) | Yes. Wikimedia returns 403 without it. |
-| `SMITHSONIAN_API_KEY` | api.data.gov/signup | Optional |
+| `SMITHSONIAN_API_KEY` | api.data.gov/signup | Optional (free): Smithsonian images |
+| `EUROPEANA_API_KEY` | pro.europeana.eu/page/get-api | Optional (free): Europeana images |
 | `ALERT_URL` | e.g. an ntfy.sh topic URL | Optional |
 
 You also need one Google account that owns the YouTube channel. No Google Cloud project is needed.
@@ -118,39 +123,44 @@ video's `status`.
 
 | # | Stage | Where | Tool | Output |
 |---|---|---|---|---|
-| 1 | **Discover** topics. Runs when no passed topic is waiting; unused passed topics expire after 7 days. A free pre-filter on each article's short description drops meta pages, living people, anything dated 2000+, and entertainment/sport before any LLM sees it. | Cloud | Wikimedia Pageviews (trending) + Wikipedia "On this day" (today + 2 days) | Candidate topics |
+| 1 | **Discover** topics. Runs when no passed topic is waiting; unused passed topics expire after 7 days. Three sources: the **catalog** (subjects linked from Wikipedia's history and true-crime list pages, `discovery.catalog_pages`, a date-seeded sample of 40), trending and "On this day". A free pre-filter on each article's short description drops meta pages, living people, anything dated 2000+, entertainment/sport, and (for the catalog) places, periods and concepts. | Cloud | Wikipedia list pages + Wikimedia Pageviews + "On this day" | Candidate topics |
 | 2 | **Gate**: drop auto-veto and off-niche topics (§4.3), score relevance 0–10; below 6 is vetoed | Cloud | LLM (§5), up to 20 candidates per call | Passed / vetoed, with a relevance score |
-| 3 | **Rank** and pick the next topic, only when no other video is in progress | Local | Python score: trend (log pageview rank, or anniversary roundness: 100th > 50th > 25th > 10th) + relevance; titles never repeat | One chosen topic → new video |
-| 4 | **Research**: fetch the topic's Wikipedia article plus up to 3 linked articles. Candidates are the article's most-mentioned links (surnames count), minus generic pages; the worker LLM picks the ones that add the most story | Cloud | Wikipedia API + LLM (§5, one small call) | Article texts + their references (the video's source list) |
-| 5 | **Script**, 3–8 min, **only from the researched articles**, with 7 `[SHORT]` passages and every direct quotation marked `[QUOTE]` | Cloud | LLM (§5) | Script |
-| 6 | **Check**: every claim must appear in the articles. Unsupported claims are removed or rewritten, and each change is recorded for review. A check that breaks the markup or cuts over 40% of the words is treated as failed. | Cloud | A *different* LLM from the writer (§5) | Checked script + list of changes |
-| 7 | **Scene plan**: Python splits the script into scenes of about 5–7 s (never splitting a name or a `[SHORT]` edge, and keeping quotes whole), so the narration can't change. The LLM then writes one archive search query per scene. | Local + Cloud | Python + LLM (§5) | Scene list |
-| 8 | **Images** for each scene | Cloud | Archives, then AI fallback (§6.1) | Local image files + license records |
+| 3 | **Survey** the passed topics' free images: a quick count for all (the article's own images + Commons hits; under `discovery.min_images` = vetoed), then — only when the next batch needs topics — the full gather + check (step 6) for the `survey_top` most promising, plus last month's pageviews | Cloud | Archives (§6.1) + LLM check | Usable-image count + checked inventory per topic |
+| 4 | **Rank**: when no video is being built and fewer than `max_waiting_review` wait on you, start a **batch** of `batch_size` videos from the best-scoring topics. Score = images ×2 (linear up to 60) + interest ×1 (pageviews, log) + relevance ×0.5 + trend ×0.5; under `min_images` never qualifies; titles never repeat | Local | Python | A batch of new videos |
+| 5 | **Research**: fetch the topic's Wikipedia article plus up to 3 linked articles. Candidates are the article's most-mentioned links (surnames count), minus generic pages; the worker LLM picks the ones that add the most story | Cloud | Wikipedia API + LLM (§5, one small call) | Article texts + their references (the video's source list) |
+| 6 | **Pictures**: the image inventory, before any writing (§6.1): the survey's checked images plus the linked articles' images, each checked by the LLM (keep only what shows something specific from the story, with a one-line "shows"), downloaded, measured, near-duplicates removed | Cloud | Archives + LLM (§5) | Numbered images with what each shows |
+| 7 | **Script**, **only from the researched articles**, written **around the images**: every passage starts with `[IMG n]`, the image on screen while it's read. Length follows the images (~9 s each, each used at most twice, 3–8 min); ~1 `[SHORT]` passage per minute (3–7); every direct quotation marked `[QUOTE]`. A draft with the wrong length, Short count or image marks gets one retry | Cloud | LLM (§5) | Script |
+| 8 | **Check**: every claim must appear in the articles. Unsupported claims are removed or rewritten, and each change is recorded for review. A change that breaks the markup or adds, drops or moves an image mark is rejected; a check that cuts over 40% of the words is treated as failed. | Cloud | A *different* LLM from the writer (§5) | Checked script + list of changes |
+| 8b | **Scenes**: Python cuts the script at every image mark and `[SHORT]` edge, then into scenes of about 5–7 s (never splitting a name, keeping quotes whole), so the narration can't change. Each scene shows its passage's image; a long passage shows it again with another camera motion. The LLM plans sound effects and on-screen text (§6.5). | Local + Cloud | Python + LLM (§5) | Scene list with images |
 | 9 | **Narration** | Local | Kokoro: `bm_george`, with `bf_emma` for quotes | WAV audio |
 | 10 | **Word timing** | Local | faster-whisper | A timestamp for every word |
 | 11 | **Assemble long-form**: pan/zoom on images, subtitles, music bed, loudness | Local | FFmpeg | `long.mp4` |
-| 12 | **Render Shorts**: the 7 marked passages, re-rendered vertically | Local | FFmpeg | `short_01.mp4` … `short_07.mp4` |
-| 13 | **Metadata**: title options, description, chapters, tags, thumbnail hook text | Cloud | LLM (§5) | Metadata |
-| 14 | **Thumbnail** | Local | Pillow template | `thumbnail.png` |
+| 12 | **Metadata**: 5 titles ranked best first (the first is used), the description's hook + summary, tags, thumbnail hook + image, each Short's title/caption/description. Code adds the exact parts (chapters, sources, credits, footer) | Cloud | LLM (§5), one call | Metadata |
+| 13 | **Thumbnail** | Local | Pillow template (§6.6) | `thumbnail.png` |
+| 14 | **Render Shorts**: the marked passages, re-rendered vertically, each ending on the thumbnail card (§6.4) | Local | FFmpeg + Kokoro | `short_01.mp4` … `short_07.mp4` |
 | 15 | **Upload kit** assembled (§7) | Local | Python | A folder in `data/output/` |
 | 16 | **Review gate** | Local | `ogh review` | Approved / sent back / rejected |
 | 17 | **Manual upload** in YouTube Studio, then marked uploaded in `ogh review` | You | YouTube Studio | Published video |
 
 ### 4.2 Statuses
 
-Topics: `candidate → passed | vetoed → used`. A passed topic becomes a video when rank picks it.
+Topics: `candidate → passed | vetoed → used`. The survey vetoes topics with too few free images;
+a passed topic becomes a video when rank puts it in a batch.
 
 Videos:
 
 ```
-selected → researched → scripted → checked → segmented → images_ready → narrated
+selected → researched → pictured → scripted → checked → segmented → narrated
   → aligned → assembled → shorts_ready → packaged → approved → uploaded
                                                   ↘ rejected
 ```
 
 `packaged` means the upload kit is built and the video is waiting for `ogh review`. Plus
-`failed`, with the error saved. `ogh review` can send a video back to any earlier status to
-redo it from there.
+`failed`, with the error saved. `ogh review` can send a packaged or failed video back to redo any
+stage: research, pictures, script, check, scenes, narration, timing, render, shorts or kit.
+Everything that stage and the later ones made is cleared (`app/sendback.py`); downloaded images
+and LLM answers are kept, so a redo only pays for what actually changes. Redoing the pictures
+also redoes the script, whose image marks number the old inventory.
 
 ### 4.3 Topic safety
 
@@ -168,10 +178,12 @@ redo it from there.
 
 ```powershell
 uv run ogh run       # advance everything as far as possible (--discover: look for topics now)
-uv run ogh review    # review finished videos: approve / reject / send back / pick title / mark uploaded
+uv run ogh review    # packaged videos: approve / reject / send back to a stage / switch title
+                     # failed videos: send back / reject;  approved videos: mark uploaded
 uv run ogh assets    # after adding music/sound effects: write their manifest.yaml files
-uv run ogh doctor    # green/red health check of config, keys, DB, FFmpeg + encoder, disk
-                     # (--live: also confirm the keys work and every model ID in config exists)
+uv run ogh doctor    # health check: config, keys, DB, FFmpeg + encoder, disk, Wikimedia contact,
+                     # voice/Whisper models + font, music licenses, today's usage per model
+                     # (--live: every model ID exists + one tiny request per provider)
 ```
 
 ---
@@ -190,7 +202,7 @@ All free tiers. Model IDs are set in `config.yaml`, so a model can be swapped wi
 | Research: pick linked articles | Groq `openai/gpt-oss-120b` | `gemini-3.5-flash-lite` | Small judgement call |
 | Scene plan (image queries) | Groq `openai/gpt-oss-120b` | `gemini-3.5-flash-lite` | Structured output |
 | Metadata + thumbnail hook | `gemini-3.8-flash` | Groq `openai/gpt-oss-120b` | Titles and hooks benefit from the stronger writer |
-| AI illustration (fallback only) | `gemini-3.1-flash-image` | — | Only when no archive image is found (§6.1) |
+| Image check (survey + pictures) | Groq `openai/gpt-oss-120b` | `gemini-3.5-flash-lite` | Reads titles/descriptions, keeps what shows the story; ~70 images per call |
 
 **Why check at all:** Wikipedia is trusted. The risk is the LLM rewriting it: adding "facts" from its
 own memory, inflating numbers, inventing quotes. The check compares the script with the articles,
@@ -200,6 +212,19 @@ not the articles with the web.
 calls only for scenes the archives can't cover. At 6 videos a month this is far inside every limit.
 When a limit is hit, the video just waits for the next run. Every call is logged in the `llm_call`
 table.
+
+**Staying free and never stalling on a limit:**
+- Limits are **daily**, never monthly: Gemini's reset at **midnight Pacific** (12:30 PM IST, 1:30 PM
+  in winter), Groq's per UTC day. `quota.py` counts each provider's own day.
+- Gemini's per-model requests/day go in `llm.daily_requests` (copy the RPD column from
+  aistudio.google.com/rate-limit); a capped model is skipped for the day without a request.
+- A **402 "prepayment credits are depleted"** (seen 2026-09-30 on every model of a free-tier project)
+  skips Gemini for the rest of the run and sends an alert; a daily-quota 429 is recognised at once
+  instead of being retried for minutes. Either way the video **waits**, it never fails.
+- Out of AI image quota mid-video: with `images.wait_for_ai_quota` (default) the scenes still
+  without a picture wait for tomorrow's quota; off, they reuse images.
+- `ogh doctor` shows today's usage per model against its cap; `--live` sends one tiny request per
+  provider, the only way to see a refused project (402) or a spent quota.
 
 **Free-tier facts (tested 2026-09-26):**
 - `gemini-2.5-flash` / `-flash-lite`: **404, "no longer available to new users"**.
@@ -221,26 +246,39 @@ table.
 
 ### 6.1 Images
 
-1. **Archives first**, in this order: Wikimedia Commons → Smithsonian Open Access (only with `SMITHSONIAN_API_KEY`).
-   A result must be relevant: its title shares at least two words with the scene's query (the whole
-   phrase, for topic-level queries), and its long side is at least 600 px. Real photographs of dead
-   bodies (crime scenes, autopsies, executions) are never used; the narration can still tell what happened.
-   These must be **public domain / CC0 only**. Each image's source URL, author and license are saved
-   and credited in the upload kit.
-2. **No match:** retry with broader, topic-level search terms.
-3. **Still nothing:** generate an **AI illustration** in a **vintage/period style** (engraving,
-   period print, oil painting) so it blends with archival material. It gets the video's topic as
-   context, not just the scene's sentence, and is credited as AI-generated.
-4. **AI unavailable** (quota or failure): **reuse an image already in this video**, the one used longest
-   ago, with a different pan/zoom so it doesn't look repeated.
+**Only real archive images, and only ones that show something from the story.** All are public
+domain / CC0, at least 600 px on the long side, with source, author and license saved and credited
+in the upload kit. Real photographs of dead bodies and site furniture (logos, flags, seals, icons)
+are never used. No AI images: every Gemini image model is 0 requests/day on the free tier
+(AI Studio → Rate limit, 2026-09-30).
 
-A video never stalls on a missing image. AI can be switched off entirely in config.
+**Archives** (`app/archives.py`), all searched together:
 
-Other rules:
-- At most 80 unique images and 20 AI illustrations per video (`images.max_images`,
-  `images.ai_max_per_video`); beyond that, scenes reuse images. The same image is never picked
-  twice in one video while unused results remain (a `.tif` and a `.jpg` of one scan count as one).
-- Downloaded images are cached in `data/cache/` and reused across videos.
+| Archive | Key |
+|---|---|
+| The researched Wikipedia articles' own images | – |
+| Wikimedia Commons | – |
+| Openverse (Flickr Commons, museums, Commons… in one search) | – |
+| The Met, Art Institute of Chicago, Cleveland Museum of Art | – |
+| Smithsonian Open Access | `SMITHSONIAN_API_KEY` (free) |
+| Europeana (public-domain mark / CC0 items only) | `EUROPEANA_API_KEY` (free) |
+
+Not sources: the Library of Congress (its API blocks non-browser clients) and the US National
+Archives catalog (needs a key, returns a web page without one).
+
+**How a video gets its pictures** (steps 3 and 6):
+1. **Gather:** each article's own images plus a search of every archive per article. A result must
+   be about its query (a person's name whole: "John Wilkes Booth", not any Booth).
+2. **Check:** one free LLM call reads every image's title and description and keeps only what
+   shows a person, place, object, document or the event of this story, writing what each shows
+   ("Ford's Theatre exterior, Washington, 1865"). Not someone who shares a name, not period filler.
+3. **Download** the kept images, measure them, and drop near-duplicates (a tiny perceptual hash).
+4. **The script is written around them** (step 7); each image is on screen while the narration
+   talks about it, and returns at most twice (never back to back), with a new camera motion.
+
+How many images a topic has varies ~50×: tested 2026-09-30, Lincoln's assassination 56, Jack the
+Ripper 33, the Titanic 33, H. H. Holmes 30, Ted Bundy 20, Lizzie Borden 10. That's why topics are
+chosen by it (step 3–4).
 
 ### 6.2 Narration
 
@@ -256,7 +294,14 @@ Other rules:
   Content ID.
 - The library has no API. Download 15–30 tracks once into `assets/music/`, then run
   `uv run ogh assets`: it writes `assets/music/manifest.yaml` (file, title, artist, license, credit)
-  for you. If a track needing credit is ever used, its credit goes into the description automatically.
+  for you, taking title and artist from the file's tags. A new track's `license` starts **empty**,
+  and a track with no license is never used: fill it in (e.g. "YouTube Audio Library — no
+  attribution required"). Kevin MacLeod tracks (incompetech, CC BY 4.0) are recognised from their
+  tags and get their license and required credit automatically.
+- The description always names the track used; if its license asks for credit, the exact credit
+  text is used.
+- Rejected sources: Pixabay (below), and Fesliyan Studios' free tier, which forbids monetized
+  videos and gets Content ID claims.
 - Music sits at −18 LUFS under narration and is lowered further while speech plays. The final mix is
   −14 LUFS. If `assets/music/` is empty, videos render without music.
 
@@ -264,16 +309,24 @@ Other rules:
 
 | | Long-form | Shorts |
 |---|---|---|
-| Length | 3–8 min (fits the story) | ≤55 s each, 7 per video, cut at sentence ends |
+| Length | 3–8 min (fits the story) | ≤55 s each including the ending, 7 per video; a passage too long is cut at its last full sentence that fits |
 | Resolution | 1920×1080, 30 fps | 1080×1920, 30 fps |
-| Images | ~5–7 s per scene, varied slow pan + zoom (in/out, left/right, up/down; a reused image never repeats its last motion); portrait images sit on a blurred copy of themselves instead of being cropped | Re-rendered from the same scenes, panning across each image; not a crop of the long-form |
-| Subtitles | Burned in, bottom-center, up to 4 words at a time (never across a sentence end or quote), current word highlighted (`#FFD23F`), quotes in italics, timed by Whisper word timestamps; 64 px | Same style, 84 px, plus a title caption |
+| Images | ~5–7 s per scene, varied slow pan + zoom (in/out, left/right, up/down; a reused image never repeats its last motion); portrait images sit on a blurred copy of themselves instead of being cropped | Re-rendered from the same scenes, not a crop of the long-form. **Every image is shown whole**: fitted in a box 92.5% of the frame's width, on a blurred, darkened copy of itself, with a slow zoom of at most 4% (so no edge ever leaves the screen). The caption and subtitles sit in the blurred bands above and below |
+| Subtitles | Burned in, bottom-center, up to 4 words at a time (never across a sentence end or quote), current word highlighted (`#FFD23F`), quotes in italics, timed by Whisper word timestamps; 64 px | Same style, 84 px, plus the LLM's 2–6 word caption above the picture |
 | Encoder | `h264_qsv`, fallback `libx264`, `yuv420p` pixel format (4:2:2 won't play everywhere) | Same |
 
 Pictures, narration and subtitles share one timeline. Every scene covers its speech *and* the pause
 after it, so images never drift out of sync with the voice.
 
-Fonts: `assets/fonts/*.ttf` from Google Fonts (e.g. Inter). Branding: `assets/branding/logo.png`.
+Font: **Arial** (`subtitles.font_file`), its heaviest installed weight (Arial Black) for thumbnails.
+Colour: `#FFD23F` for highlights, frames and accents. No logo anywhere: YouTube shows the
+channel's picture next to every video and Short.
+
+**The end of every Short** (~4 s): the video's thumbnail in the middle of the screen in a glowing
+`#FFD23F` frame, "WATCH THE FULL STORY" above it, while the narrator says one line sending the
+viewer to the full video, e.g. "Want the whole story? Tap the video linked below." Four lines
+rotate so the Shorts don't all end alike. "Linked below" is literal: in Studio each Short gets the
+long-form as its **Related video**, which YouTube shows as a tappable link under the Short.
 
 ### 6.5 Sound effects & on-screen text
 
@@ -304,10 +357,13 @@ of a label in the narration, the articles or the title. Anything else is dropped
 
 ### 6.6 Thumbnail
 
-- The most striking image from the video.
-- A 2–4 word hook written by the LLM (not just the first words of the title), in bold outlined text.
-- A branded frame and logo.
-- One thumbnail per video; sending the video back to the thumbnail stage makes a new one.
+- The most striking image from the video: the LLM picks it from the video's images (archive images
+  before AI ones, wide and large first), filled edge to edge and darkened toward the text.
+- A 2–4 word hook written by the LLM that adds to the title rather than repeating it, in Arial
+  Black, white with a black outline, one word in `#FFD23F`, bottom-left, as large as fits in two lines.
+- A thin `#FFD23F` frame. No logo (see §6.4).
+- One thumbnail per video; sending the video back to the thumbnail stage makes a new one. It is
+  made before the Shorts, which end on it.
 
 ---
 
@@ -322,26 +378,55 @@ of a label in the narration, the articles or the title. Anything else is dropped
 Manual upload costs ~10–15 min per batch and removes all of that. The API step could be added later
 without changing the rest of the pipeline.
 
-Each video gets a folder in `data/output/`:
+Each video gets a folder in `data/output/`, named by its suggested publish date. The renders are
+moved into it (not copied), so nothing is stored twice:
 
 ```
-data/output/2026-10-03_fall-of-constantinople/
+data/output/2026-10-02_fall-of-constantinople/
   long.mp4
   long.srt
   short_01.mp4 … short_07.mp4
   short_01.srt … short_07.srt
   thumbnail.png
-  upload.md      ← everything to paste into Studio
+  upload.md      ← everything to paste into Studio, step by step
+  credits.md     ← full source + image-credit list
 ```
 
-`upload.md` contains:
-- the chosen title (you pick it from the candidates in `ogh review`);
-- the description, with exact chapters (from real scene timings), sources, image credits (archive
-  licenses, and AI-generated scenes marked as such) and music credits;
-- tags;
-- a Studio checklist: category *Education*, *not made for kids*, subtitle upload, thumbnail,
-  suggested schedule (long-form Tue/Fri 15:00, Shorts daily 12:00, America/New_York), and the
-  "altered or synthetic content" setting (AI narration voice; whether AI illustrations were used).
+`upload.md` contains, in upload order:
+- **Long-form:** the title (the best-ranked of 5; the others are listed, and `ogh review` can
+  switch), the description, thumbnail, audience (*not made for kids*), the "altered or synthetic
+  content" answer with the reason (AI narrator voice; how many AI illustrations), tags, category,
+  subtitle upload, and the scheduled time.
+- **Each Short:** its file, title, description, the **Related video** to pick (the long-form), and
+  its scheduled time.
+
+**Suggested schedule** (`publish.schedule`, times in `timezone`): the long-form takes the next free
+Tue/Fri 15:00 slot after every other packaged video's; its Shorts follow at 12:00 daily, starting
+after the long-form is out and after the Shorts already queued. Re-packaging keeps the dates.
+
+**Description layout** (built by code around the LLM's hook and summary; follows current YouTube
+guidance: only ~150 characters show before "more", chapters need 3+ entries from 0:00, the first 3
+hashtags show above the title, 5,000 characters max):
+
+```
+<hook: 1–2 lines naming the topic>
+
+<summary: 2–3 sentences with the key people, places, dates>
+
+▶ Subscribe for more true stories: https://www.youtube.com/@PantherTellsHistory?sub_confirmation=1
+
+⏱ Chapters            ← from the chapter cards' real times; left out if fewer than 3
+📚 Sources (Wikipedia) ← the researched articles
+🖼 Image credits       ← one line per archive image; one summary line if the list would pass 5,000
+🎵 Music               ← only if a track needs credit
+
+<publish.description_footer: comment prompt, upload schedule, how the video is made, corrections>
+
+#<Topic> #History #PantherTellsHistory
+```
+
+A Short's description is its 1–2 sentence tease, `publish.shorts_footer` and
+`#<Topic> #History #PantherTellsHistory #Shorts`.
 
 After uploading, run `ogh review` and mark the video **uploaded**. Analytics are checked in YouTube
 Studio; there's no API.
@@ -363,14 +448,21 @@ Studio; there's no API.
 | `llm_cache` | Cached responses, so re-runs during development cost nothing |
 
 Folders:
-- `data/work/<video>/`: intermediate files (audio, timings, clips). **Deleted when the video is approved.**
-- `data/output/<video>/`: upload kits. **Kept 30 days after you mark the video uploaded, then deleted.**
-- `data/cache/`: downloaded images and API responses. Kept, so they can be reused.
+- `data/work/<video>/`: intermediate files (audio, timings, clips; ~400 MB). **Deleted when the
+  video is approved** (or rejected).
+- `data/output/<date>_<topic>/`: upload kits. **Deleted `ops.keep_output_days` (30) after you mark
+  the video uploaded** (or reject it).
+- `data/cache/`: downloaded images. Kept for reuse; images no scene uses and unused LLM answers are
+  deleted after `ops.keep_cache_days` (90); files no record points to are deleted at once.
 - `data/models/`: Kokoro and Whisper weights, downloaded once.
-- `data/logs/`: run logs.
-- `assets/`: your curated files: `music/` (+ `manifest.yaml`), `fonts/`, `branding/`.
+- `data/logs/run_<date>.log`: every `ogh run`, kept 30 days.
+- `assets/`: your curated files: `music/` and `sfx/`, each with its `manifest.yaml`.
 
-**Git-ignored:** `.env`, `data/` and `assets/`. `config.yaml` is committed because it holds no secrets.
+Cleanup (`app/cleanup.py`) runs at the start of every `ogh run`.
+
+**Git-ignored:** `.env`, `data/`, and the audio in `assets/` — each `assets/*/manifest.yaml` **is**
+committed, because it holds every track's license and required credit. `config.yaml` is committed
+because it holds no secrets.
 Rendering only happens if at least 15 GB of disk is free.
 
 ---
@@ -382,7 +474,7 @@ extra docs.
 
 ```
 app/
-  cli.py           the `ogh` command: run · review · doctor
+  cli.py           the `ogh` command: run · review · doctor · assets
   orchestrator.py  `ogh run`: one pass over every topic and video (outcome rules in §4.1)
   config.py        load + validate config.yaml and .env; data/ paths
   db.py            SQLAlchemy models + session
@@ -391,8 +483,11 @@ app/
   wikipedia.py     Wikipedia action API: page descriptions, article text, links, references
   ffmpeg.py        FFmpeg/ffprobe commands + encoder choice, shared by assemble + Shorts
   subtitles.py     ASS/SRT building from word timings, shared by assemble + Shorts
-  storage.py       data/ paths (work, output, cache) + atomic writes
-  quota.py         daily usage counters; RetryLater / QuotaExceeded
+  storage.py       data/ paths (work, output, cache, models) + atomic writes
+  quota.py         daily caps per provider/model; RetryLater / QuotaExceeded / ProviderBlocked
+  archives.py      the public-domain image archives (§6.1), one search function each
+  sendback.py      send a video back to a stage, clearing what later stages made (§4.2)
+  cleanup.py       deletes work files, old kits, unused cache (§8); runs with every `ogh run`
   notify.py        optional failure alert to ALERT_URL
   status.py        the status vocabulary in §4.2
   assets.py        music + sound-effect manifests (`ogh assets`), track/effect picking
@@ -410,7 +505,7 @@ README.md          this file, the only doc
 **Scaling path:**
 - a new stage is one file in `app/stages/` plus one status;
 - a new LLM provider is one adapter in `llm.py`;
-- a new image source is one function in the images stage;
+- a new image source is one function in `archives.py`;
 - a second channel is a second config file.
 
 ---
@@ -428,8 +523,8 @@ uv run ogh doctor                   # everything green before the first run
 ```
 
 Then:
-1. Download music into `assets/music/` (§6.3), sound effects into `assets/sfx/` (§6.5), a font
-   into `assets/fonts/`, then run `uv run ogh assets`.
+1. Download music into `assets/music/` (§6.3) and sound effects into `assets/sfx/` (§6.5), then
+   run `uv run ogh assets`.
 2. Create the YouTube channel.
 3. For the first few runs, watch every video fully in review before uploading.
 
@@ -445,9 +540,9 @@ Then:
 | LLM states a false "fact" | Script written only from the articles; a second model checks every claim; you review it with the sources listed |
 | The Wikipedia article itself is wrong | Accepted risk. Prefer well-covered topics; the description credits Wikipedia and its references. |
 | Heavy topics handled flippantly (sensitive topics are allowed automatically) | Script prompt drops the cheeky tone for tragic subjects; human review of every video |
-| An AI illustration looks like a fake historical photo | Vintage/illustrated style only, never photorealistic; credited as AI-generated; disclosed in Studio |
-| The archive has no good image for a scene | Broader search, then AI, then reuse (§6.1) |
-| Music copyright claim | YouTube Audio Library no-attribution tracks only |
+| An archive image shows the wrong person or place (shared names) | Names must match whole; the LLM image check reads each description; you review every video |
+| A topic has too few images | Topics are chosen by their image count (survey + rank); the script's length follows the images, so a thin topic makes a shorter video instead of a padded one |
+| Music copyright claim | Licensed tracks only (YouTube Audio Library, Kevin MacLeod CC BY with credit); a track with no license is never used |
 | YouTube's "inauthentic / mass-produced content" policy | Real research, sourced facts, human review of every video; don't raise volume without raising quality |
 | Laptop rendering is slow | Quick Sync hardware encoding; ~6 videos/month is little load; render while plugged in |
 | Antivirus locking files mid-render | Add `data/` to Windows Security exclusions if renders fail randomly |
@@ -472,6 +567,9 @@ Then:
 | PostgreSQL / job queue | Overkill for one sequential local script |
 | MoviePy / ffmpeg-python | Wrappers lag behind FFmpeg; call the CLI directly |
 | Pixabay music | Occasional Content ID claims |
+| Switching to horror / movie-recap / sports-recap niches for more images | Their stills and footage are copyrighted (Content ID, strikes); public-domain imagery is overwhelmingly historical (2026-09-30) |
+| Gemini image models on the free tier | 0 requests/day for every image model (AI Studio rate-limit page, 2026-09-30) |
+| US National Archives catalog API | Needs a key; returns a web page without one. Much of it is on Commons. |
 
 ---
 
@@ -500,6 +598,17 @@ Then:
 | 2026-09-27 | Narration is synthesised per scene and each scene's time is measured from the audio, pause included, so the pictures can't drift from the voice; Emma reads `[QUOTE]` text. Whisper only places words inside a scene (the script's own words are displayed), so a mismatch can't spread. The subtitle canvas matches the video resolution, so sizes are real pixels. Clips render in parallel, then one final pass does subtitles + music ducking + loudness. |
 | 2026-09-27 | After the first render felt flat: sound effects (from your YouTube Audio Library downloads, tagged via `ogh assets`) and on-screen text (place/date labels, number callouts, chapter cards), planned in the existing scene-plan call. Code enforces sparsity (effects ≤ 30% of scenes, never consecutive; labels/numbers ≤ 25%; ≤ 6 chapters) and rejects any overlay whose numbers or names the narration/sources don't contain. Scene length stays 5–7 s. |
 | 2026-09-27 | `awaiting_review` merged into `packaged` (same meaning). Encoder output forced to limited-range 4:2:0 (`-color_range tv`): archival JPEGs are full-range and QSV otherwise tags output `yuvj420p`. |
+| 2026-09-28 | `testing` merged into `main` (PR #1) and deleted. From 2026-09-30, `main` is the only branch; all work happens on it. |
+| 2026-09-30 | Channel renamed OurGreatHistory → **PantherTellsHistory** (`@PantherTellsHistory`) to match the YouTube account. The `ogh` command keeps its name. |
+| 2026-09-30 | Images, after the S7 test run showed the wrong man (Sir George Robinson for lawyer George D. Robinson), a relative for Andrew Borden, letters as filler and 41 of 67 scenes reusing images in blind rotation: results must match every name in the scene query (initials included), letters/records only when asked for, topic-level results must share a word with the scene, reuse picks the best-fitting image, and the AI cap is 70, so every scene can have its own picture (the image model has its own quota; past it, scenes reuse). Music: a track with no license is never used (a default once mislabelled a CC BY track), and the description always names the track. |
+| 2026-09-30 | Bundle A (free tier, never stall): Gemini's 402 blocks Gemini for the run and alerts; daily-quota 429s aren't retried; per-model daily caps in config, counted from midnight Pacific; the checker/writer then wait instead of failing the video; images wait for tomorrow's AI quota instead of repeating pictures; `doctor` shows usage and probes both providers. Groq's free limits confirmed from its headers: 1,000 requests/day, 8K tokens/min. |
+| 2026-09-30 | Bundle B: `ogh review` sends a packaged or failed video back to any stage (images: chosen scenes only), clearing exactly what later stages made — no more hand-editing the database. |
+| 2026-09-30 | Bundle C: images come from a pooled search (Wikipedia article images + Commons, Openverse, Met, Art Institute of Chicago, Cleveland, Smithsonian, Europeana) ranked per scene by one Groq call; an image may serve 3 scenes, never back to back; violent images are never reused on calm scenes; AI style forbids gore. AI illustrations off by default: every Gemini image model is 0/day on the free tier. Tested on Lizzie Borden: ~15–20 relevant archive images exist for 67 scenes. |
+| 2026-09-30 | Bundle D: the script must fit the 3–8 min range and have exactly 7 non-touching Short passages, else one retry with the problem named, then fail. Shorts end at a scene edge, never mid-word. Gate accepts relevance sent as text. |
+| 2026-09-30 | Bundles E–G: downloads retry only real network errors (not 404/403); `ogh run` keeps Windows awake and logs to `data/logs/`; `ogh review` switches titles and marks uploads; cleanup of work files, kits, cache and stray files; `doctor` checks media, music licenses and the Wikimedia contact; asset manifests committed; lint at 120 columns and green. |
+| 2026-09-30 | **Bundle H — pictures decide.** Topics are chosen by how many usable free images they have (catalog source from Wikipedia's history/true-crime lists; survey; batches of 5; score images ×2 + interest + relevance + trend). Each video's images are gathered and checked *before* the script, which is written around them with `[IMG n]` marks; its length follows the images (3–8 min, 3–7 Shorts). Removed: per-scene image search, pool ranking, period filler, blind reuse, AI illustrations (0/day free). Measured: images per topic vary ~50× (Lincoln 56 … Lizzie Borden 10). |
+| 2026-09-30 | Images decision: stay in the history niche (public-domain imagery is overwhelmingly historical; recap genres use copyrighted stills). Next: search many free archives at once and rank the pool (bundle C). |
+| 2026-09-30 | S7. **Order:** metadata → thumbnail → Shorts (the Shorts end on the thumbnail and use the metadata's captions), all in the Shorts stage; the package stage builds the kit. **Shorts** show every image whole (fitted box on its own blurred copy, zoom ≤ 4%) instead of panning a crop; each ends on a ~4 s thumbnail card with a spoken line pointing to the Related-video link, so passages are now 15–45 s. **Metadata:** one call; the best of 5 titles is picked automatically; code, not the LLM, writes chapters (real times), sources, credits, the fixed footer and hashtags. **Thumbnail:** no logo (the channel picture already shows), Arial Black, `#FFD23F` accent word + frame. **Kit:** files moved, not copied; dated by the suggested publish slot. **Cleanup:** tests now write only to a temp folder (they had left 150 empty folders in `data/output/`). |
 
 ---
 
@@ -516,5 +625,6 @@ Then:
 | S5 | Images: archive chain → broader → AI → reuse, licenses | ✅ Done — verified live on Lizzie Borden (55 scenes in ~50 s) |
 | S6 | Narration (2 voices), Whisper timing, assembly (sync, subtitles, motion, music, Quick Sync) | ✅ Done — verified live: 7:54 Lizzie Borden video; narration 2.7 min, timing ~9 min (incl. one-time model download), render 92 s; −14.5 LUFS, locked sync |
 | S6b | Sound effects + on-screen text (labels, numbers, chapter cards), `ogh assets` | ✅ Done — see §12 |
-| S7 | Shorts, metadata, thumbnail, upload kit | ⬜ |
-| S8 | `ogh review`, cleanup (incl. deleting cached images no video has used for 90 days), `data/logs/`, `ogh doctor` | ⬜ |
+| S7 | Shorts, metadata, thumbnail, upload kit | ✅ Done — see §12 (2026-09-30) |
+| S8 | `ogh review` (send back, title, uploaded), cleanup, `data/logs/`, `ogh doctor` | ✅ Done — bundles A–G (§12, 2026-09-30) |
+| H | Image-led topics and scripts: catalog source, survey, batches of 5, pictures before the script, `[IMG n]` marks, no AI images | ✅ Built and tested offline; live up to the script (Gemini's 402 blocks writing until a new free-tier project key) |

@@ -1,6 +1,15 @@
-"""Pillow thumbnail template: a subject cut-out (the video's first available segment
-image) + a 3-4 word headline + a brand frame -> video.thumbnail_uri. One template
-(WORK_MEDIA.md §2) — a second template / A-B variant is DESIGN.md #39, not built here.
+"""Thumbnail (README §4.1 step 13, §6.6): a Pillow template, 1280x720.
+
+- The picture: the image the metadata step picked as the video's most striking (archive
+  images preferred), else the first scene's. Filled edge to edge, darkened toward the
+  bottom-left so the text always reads.
+- The hook: the metadata step's 2–4 words, in the channel's font (Arial — its heaviest
+  weight installed), white with a black outline; one word in the highlight colour. As
+  large as fits in two lines at most.
+- A thin frame in the highlight colour. No logo: YouTube already shows the channel's
+  picture beside every video.
+
+Also shown in the Shorts' closing card, which is why it's made before the Shorts.
 """
 
 from __future__ import annotations
@@ -8,99 +17,110 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
+from app.config import get_config
 from app.db import Asset, Scene, Video
 from app.storage import output_dir
+from app.subtitles import font_path
 
 THUMBNAIL_SIZE = (1280, 720)
-_BRAND_FRAME_COLOR = (20, 20, 20)
-_BRAND_FRAME_WIDTH = 24
-_TEXT_COLOR = (255, 255, 255)
-_TEXT_STROKE_COLOR = (0, 0, 0)
+_HEAVY_FONTS = (Path(r"C:\Windows\Fonts\ariblk.ttf"), Path(r"C:\Windows\Fonts\arialbd.ttf"))
+_WHITE, _BLACK = (255, 255, 255), (0, 0, 0)
+_MARGIN = 56
+_FRAME = 10
+_MAX_TEXT_WIDTH = 0.78  # of the canvas: leaves the subject visible on the right
 
 
-def _headline(title: str, max_words: int = 4) -> str:
-    return " ".join((title or "").split()[:max_words]).upper()
+def _rgb(hex_color: str) -> tuple[int, int, int]:
+    return tuple(int(hex_color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
 
 
-def _subject_image_path(session: Session, video_id: uuid.UUID) -> Path | None:
-    asset_id = (
-        session.execute(
-            select(Scene.image_asset_id)
-            .filter_by(video_id=video_id)
-            .where(Scene.image_asset_id.is_not(None))
-            .order_by(Scene.idx)
-        )
-        .scalars()
-        .first()
-    )
-    if asset_id is None:
-        return None
-    asset = session.get(Asset, asset_id)
-    if asset is None or not asset.uri:
-        return None
-    path = Path(asset.uri)
-    return path if path.exists() else None
+def _font_file() -> Path:
+    for path in _HEAVY_FONTS:
+        if path.exists():
+            return path
+    return font_path(get_config())
 
 
-def _cover_resize(image: Image.Image, size: tuple[int, int]) -> Image.Image:
-    target_w, target_h = size
-    ratio = max(target_w / image.width, target_h / image.height)
-    resized = image.resize((round(image.width * ratio), round(image.height * ratio)))
-    left = (resized.width - target_w) // 2
-    top = (resized.height - target_h) // 2
-    return resized.crop((left, top, left + target_w, top + target_h))
+def _cover(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+    ratio = max(size[0] / image.width, size[1] / image.height)
+    resized = image.resize((round(image.width * ratio), round(image.height * ratio)), Image.LANCZOS)
+    left, top = (resized.width - size[0]) // 2, (resized.height - size[1]) // 3  # keep heads in frame
+    return resized.crop((left, top, left + size[0], top + size[1]))
 
 
-def _font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
-    candidates = sorted(Path(get_settings().assets_dir).glob("fonts/*.ttf"))
-    if candidates:
-        return ImageFont.truetype(str(candidates[0]), size)
-    try:
-        return ImageFont.load_default(size=size)  # Pillow >= 10.1
-    except TypeError:
-        return ImageFont.load_default()
+def _shade(canvas: Image.Image) -> Image.Image:
+    """Darken toward the bottom-left, where the text sits."""
+    w, h = canvas.size
+    down = np.clip((np.arange(h) / h - 0.25) / 0.75, 0, 1)[:, None]
+    left = np.maximum(0.35, 1 - np.arange(w) / w)[None, :]
+    mask = Image.fromarray((200 * down * left).astype(np.uint8), "L")
+    return Image.composite(Image.new("RGB", (w, h), _BLACK), canvas, mask)
 
 
-def _draw_outlined_headline(draw: ImageDraw.ImageDraw, text: str, font, canvas_size: tuple[int, int]) -> None:
-    if not text:
-        return
-    bbox = draw.textbbox((0, 0), text, font=font, stroke_width=6)
-    text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x = (canvas_size[0] - text_w) // 2
-    y = canvas_size[1] - text_h - 80
-    draw.text((x, y), text, font=font, fill=_TEXT_COLOR, stroke_width=6, stroke_fill=_TEXT_STROKE_COLOR)
+def layout(words: list[str], font_file: Path, max_width: int) -> tuple[list[list[str]], ImageFont.FreeTypeFont]:
+    """Split the hook into 1–2 lines and pick the largest font size that fits."""
+    options = [[words]] + [[words[:k], words[k:]] for k in range(1, len(words))]
+    for size in range(170, 59, -6):
+        font = ImageFont.truetype(str(font_file), size)
+        stroke = max(4, size // 14)
+        for lines in sorted(options, key=lambda ls: (len(ls), abs(len(ls[0]) - len(ls[-1])))):
+            if all(font.getlength(" ".join(line)) + 2 * stroke <= max_width for line in lines):
+                return lines, font
+    return [words[:2], words[2:]] if len(words) > 2 else [words], ImageFont.truetype(str(font_file), 60)
 
 
-def render_thumbnail(title: str, subject_path: Path | None, font_size: int = 90) -> Image.Image:
-    """The pure compositing step — split out from `run()` so it's testable without a DB."""
-    canvas = Image.new("RGB", THUMBNAIL_SIZE, color=(30, 30, 30))
+def render_thumbnail(text: str, highlight: str, subject_path: Path | None) -> Image.Image:
+    """The pure compositing step — testable without a DB."""
+    accent = _rgb(get_config().subtitles.highlight_color)
+    canvas = Image.new("RGB", THUMBNAIL_SIZE, (30, 30, 30))
     if subject_path is not None:
         try:
-            subject = _cover_resize(Image.open(subject_path).convert("RGB"), THUMBNAIL_SIZE)
-            canvas.paste(subject, (0, 0))
+            with Image.open(subject_path) as im:
+                canvas = _cover(im.convert("RGB"), THUMBNAIL_SIZE)
         except OSError:
             pass  # keep the plain background if the image can't be decoded
+    canvas = _shade(canvas)
 
     draw = ImageDraw.Draw(canvas)
-    draw.rectangle(
-        [(0, 0), (THUMBNAIL_SIZE[0] - 1, THUMBNAIL_SIZE[1] - 1)],
-        outline=_BRAND_FRAME_COLOR,
-        width=_BRAND_FRAME_WIDTH,
-    )
-    _draw_outlined_headline(draw, _headline(title), _font(font_size), THUMBNAIL_SIZE)
+    words = text.split()
+    if words:
+        lines, font = layout(words, _font_file(), int(THUMBNAIL_SIZE[0] * _MAX_TEXT_WIDTH))
+        stroke = max(4, font.size // 14)
+        line_h = int(font.size * 1.08)
+        y = THUMBNAIL_SIZE[1] - _MARGIN - line_h * len(lines)
+        for line in lines:
+            x = _MARGIN
+            for word in line:
+                color = accent if word == highlight else _WHITE
+                draw.text((x + 6, y + 8), word, font=font, fill=_BLACK)  # drop shadow
+                draw.text((x, y), word, font=font, fill=color, stroke_width=stroke, stroke_fill=_BLACK)
+                x += font.getlength(word + " ")
+            y += line_h
+    draw.rectangle([(0, 0), (THUMBNAIL_SIZE[0] - 1, THUMBNAIL_SIZE[1] - 1)], outline=accent, width=_FRAME)
     return canvas
 
 
-def write_thumbnail(session: Session, video: Video) -> None:
-    """Called by the package stage (app/stages/package.py), not dispatched on its own."""
-    canvas = render_thumbnail(video.title or "", _subject_image_path(session, video.id))
+def _subject_path(session: Session, video: Video) -> Path | None:
+    chosen = ((video.video_metadata or {}).get("thumbnail") or {}).get("asset_id")
+    asset = session.get(Asset, uuid.UUID(chosen)) if chosen else None
+    if asset is None:
+        first = session.execute(select(Scene.image_asset_id).filter_by(video_id=video.id)
+                                .where(Scene.image_asset_id.is_not(None)).order_by(Scene.idx)).scalars().first()
+        asset = session.get(Asset, first) if first else None
+    path = Path(asset.uri) if asset and asset.uri else None
+    return path if path and path.exists() else None
 
-    out_path = output_dir(video.id) / "thumbnail.png"
-    canvas.save(out_path)
 
-    video.thumbnail_uri = str(out_path)
+def write_thumbnail(session: Session, video: Video) -> Path:
+    """Called by the Shorts stage after the metadata step. Redoing it makes a new one."""
+    hook = (video.video_metadata or {}).get("thumbnail") or {}
+    canvas = render_thumbnail(hook.get("text", ""), hook.get("highlight", ""), _subject_path(session, video))
+    out = output_dir(video.id) / "thumbnail.png"
+    canvas.save(out)
+    video.thumbnail_uri = str(out)
+    return out

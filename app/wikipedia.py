@@ -58,6 +58,26 @@ def article(title: str) -> dict | None:
 
 
 @http_retry
+def all_links(title: str, limit: int = 5000) -> list[str]:
+    """Every main-namespace link on a page (following continuation, up to `limit`) — the
+    catalog source reads Wikipedia's list pages this way."""
+    links: list[str] = []
+    cont: dict = {}
+    while len(links) < limit:
+        resp = get_http_client().get(ACTION_API_URL, params={
+            "action": "query", "format": "json", "formatversion": 2, "redirects": 1, "titles": title,
+            "prop": "links", "plnamespace": 0, "pllimit": "max", **cont})
+        resp.raise_for_status()
+        data = resp.json()
+        pages = data.get("query", {}).get("pages", [])
+        links += [link["title"] for link in (pages[0].get("links", []) if pages else [])]
+        if "continue" not in data:
+            break
+        cont = data["continue"]
+    return links[:limit]
+
+
+@http_retry
 def links_and_sources(title: str) -> tuple[list[str], list[str]]:
     """(article links in the main namespace, external reference URLs) — first page of each
     (up to 500), which is plenty for picking linked articles and listing sources."""

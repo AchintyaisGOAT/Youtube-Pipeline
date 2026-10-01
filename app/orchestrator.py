@@ -3,8 +3,9 @@ worker, no scheduler: you run it when you choose, and it's safe to stop and rest
 
 1. discover   — only when no topic is waiting (app/stages/discover.py)
 2. gate       — every `candidate` topic, in batched LLM calls
-3. rank       — starts a video from the best passed topic, if none is in progress
-4. videos     — each non-terminal video is walked through as many stages as it can go,
+3. survey     — counts the passed topics' free images (quick, then in full for the best)
+4. rank       — starts a batch of videos from the best-illustrated topics, if none is being built
+5. videos     — each non-terminal video is walked through as many stages as it can go,
                 until it reaches review, fails, or is deferred
 
 A stage module is looked up by the video's current `Status` and exposes
@@ -33,23 +34,24 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import notify
+from app import cleanup, notify
 from app.db import Topic, Video, get_sessionmaker
 from app.quota import RetryLater
 from app.status import TERMINAL, Status, TopicStatus
 
 DISCOVER_STAGE = "app.stages.discover"
 GATE_STAGE = "app.stages.gate"
+SURVEY_STAGE = "app.stages.survey"
 RANK_STAGE = "app.stages.rank"
 
 #: video status -> the stage module that moves it on (README §4.2)
 VIDEO_STAGES: dict[Status, str] = {
     Status.SELECTED: "app.stages.research",
-    Status.RESEARCHED: "app.stages.script",
+    Status.RESEARCHED: "app.stages.picture",
+    Status.PICTURED: "app.stages.script",
     Status.SCRIPTED: "app.stages.check",
     Status.CHECKED: "app.stages.segment",
-    Status.SEGMENTED: "app.stages.images",
-    Status.IMAGES_READY: "app.stages.narrate",
+    Status.SEGMENTED: "app.stages.narrate",
     Status.NARRATED: "app.stages.align",
     Status.ALIGNED: "app.stages.assemble",
     Status.ASSEMBLED: "app.stages.shorts",
@@ -176,7 +178,9 @@ def _advance_videos() -> None:
 
 
 def run(*, force_discover: bool = False) -> None:
+    _attempt("cleanup", cleanup.run)  # never blocks a run: a failure is only logged
     _run_singleton(DISCOVER_STAGE, force=force_discover)
     _gate_topics()
+    _run_singleton(SURVEY_STAGE)
     _run_singleton(RANK_STAGE)
     _advance_videos()

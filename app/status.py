@@ -20,10 +20,10 @@ class Status(StrEnum):
 
     SELECTED = "selected"
     RESEARCHED = "researched"
+    PICTURED = "pictured"  # the image inventory is gathered and checked; the script is written around it
     SCRIPTED = "scripted"
     CHECKED = "checked"
-    SEGMENTED = "segmented"
-    IMAGES_READY = "images_ready"
+    SEGMENTED = "segmented"  # scenes cut at the script's image marks, each with its image
     NARRATED = "narrated"
     ALIGNED = "aligned"
     ASSEMBLED = "assembled"
@@ -37,7 +37,3 @@ class Status(StrEnum):
 
 #: Videos no stage will ever pick up again (a `failed` one can be sent back via review).
 TERMINAL: frozenset[Status] = frozenset({Status.UPLOADED, Status.REJECTED, Status.FAILED})
-
-#: Videos that count as "in progress" for the one-video-at-a-time rule: anything that
-#: hasn't been handed over to you yet.
-IN_PROGRESS: frozenset[Status] = frozenset(Status) - TERMINAL - {Status.APPROVED}

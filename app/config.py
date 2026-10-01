@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     groq_api_key: str = ""
     smithsonian_api_key: str = ""
+    europeana_api_key: str = ""
     #: Must be a URL, not an email — Wikimedia's bot policy (tightened 2026-09-23)
     #: 403s any request whose User-Agent contact isn't a URL.
     wikimedia_contact: str = "https://example.org/"
@@ -65,7 +66,6 @@ class ChannelInfo(_Model):
     handle: str = ""
     audience: str = ""
     tone: str = ""
-    language: str = "en-US"
 
 
 class Topics(_Model):
@@ -74,10 +74,34 @@ class Topics(_Model):
 
 
 class Discovery(_Model):
-    sources: list[Literal["trending", "on_this_day"]] = Field(
-        default_factory=lambda: ["trending", "on_this_day"], min_length=1
+    sources: list[Literal["catalog", "trending", "on_this_day"]] = Field(
+        default_factory=lambda: ["catalog", "trending", "on_this_day"], min_length=1
     )
+    #: Candidates from trending + on_this_day together (split evenly).
     max_candidates: int = Field(20, ge=1, le=200)
+    #: Videos started together (README §4.1); the next batch starts when all are built.
+    batch_size: int = Field(5, ge=1, le=50)
+    #: Usable free images a topic needs to be made (the survey counts them).
+    min_images: int = Field(15, ge=1, le=500)
+    #: The survey's quick count only removes hopeless topics below this.
+    quick_min_images: int = Field(5, ge=0, le=500)
+    #: Topics given the full image survey per run, most promising first.
+    survey_top: int = Field(8, ge=1, le=100)
+    #: No new batch while this many videos wait for review or upload.
+    max_waiting_review: int = Field(10, ge=1, le=200)
+    #: Candidates sampled from the catalog pages per discovery.
+    catalog_candidates: int = Field(40, ge=1, le=500)
+    #: Wikipedia list pages whose links are the catalog (README §4.1).
+    catalog_pages: list[str] = Field(default_factory=lambda: [
+        "Wikipedia:Vital articles/Level/4/History",
+        "List of unsolved murders (before 1900)",
+        "List of unsolved murders (1900–1979)",
+        "List of serial killers before 1900",
+        "List of assassinations",
+        "List of maritime disasters in the 19th century",
+        "List of heists",
+        "List of hoaxes",
+    ])
     #: Gate relevance (0–10) a topic needs to pass; weaker fits are vetoed.
     min_relevance: int = Field(6, ge=0, le=10)
     #: Passed topics older than this expire, so trending topics don't go stale and
@@ -93,7 +117,10 @@ class Llm(_Model):
     checker: str = "gemini-3.5-flash"
     worker: str = "openai/gpt-oss-120b"
     worker_fallback: str = "gemini-3.5-flash-lite"
-    image: str = "gemini-3.1-flash-image"
+    #: Requests a day per model, copied from aistudio.google.com/rate-limit (Gemini's
+    #: limits are per model and not published elsewhere). A model not listed has no local
+    #: cap — the provider's own refusal still stops it.
+    daily_requests: dict[str, int] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _checker_differs(self) -> Llm:
@@ -144,23 +171,22 @@ class Video(_Model):
 
 
 class Images(_Model):
-    #: Searched in this order (README §6.1). Smithsonian is skipped without an API key.
-    sources: list[Literal["wikimedia_commons", "smithsonian"]] = Field(
-        default_factory=lambda: ["wikimedia_commons", "smithsonian"]
+    #: Archives searched for the image pool (README §6.1, app/archives.py). Smithsonian and
+    #: Europeana are skipped without their free API keys.
+    sources: list[Literal["wikimedia_commons", "openverse", "met", "artic", "cleveland", "smithsonian",
+                          "europeana"]] = Field(
+        default_factory=lambda: ["wikimedia_commons", "openverse", "met", "artic", "cleveland", "smithsonian",
+                                 "europeana"]
     )
-    #: README §6.1 step 3 — set false to never generate AI images.
-    ai_fallback: bool = True
-    #: Most AI illustrations one video may use; beyond it, scenes reuse images. Keeps a
-    #: topic the archives barely cover from spending the whole image quota.
-    ai_max_per_video: int = Field(20, ge=0, le=500)
-    #: Prepended to every AI illustration prompt; keeps AI scenes consistent with each
-    #: other and close to the archival material around them. Never photorealistic.
-    ai_style: str = (
-        "Vintage historical illustration in the style of a period engraving or print, "
-        "muted colors, fine linework. One single full-frame scene filling the whole 16:9 "
-        "widescreen image: no border, no frame, no panels, no text or lettering."
-    )
-    max_images: int = Field(80, ge=1, le=500)
+    #: Most images one video's inventory keeps.
+    max_images: int = Field(60, ge=1, le=500)
+    #: Fewest checked images a video can be written around (the survey already asks for
+    #: `discovery.min_images`; this catches a topic whose images failed to download).
+    min_per_video: int = Field(8, ge=1, le=500)
+    #: How long each image passage runs, on average; with `max_uses` this sets the length.
+    seconds_per_image: float = Field(9.0, ge=3, le=30)
+    #: Passages one image may illustrate (never two in a row).
+    max_uses: int = Field(2, ge=1, le=5)
 
 
 class Voice(_Model):
@@ -175,8 +201,8 @@ class Alignment(_Model):
 
 
 class Subtitles(_Model):
-    #: Relative to the repo; if missing, the first assets/fonts/*.ttf, else Arial.
-    font_file: str = "assets/fonts/Inter-Regular.ttf"
+    #: Absolute or relative to the repo; if missing, the first assets/fonts/*.ttf, else Arial.
+    font_file: str = "C:/Windows/Fonts/arial.ttf"
     #: Real pixels: the subtitle canvas matches the video (1920x1080 / 1080x1920).
     size: int = Field(64, ge=8, le=300)
     shorts_size: int = Field(84, ge=8, le=300)
@@ -224,11 +250,20 @@ class Publish(_Model):
     category: str = "Education"
     made_for_kids: bool = False
     schedule: Schedule = Field(default_factory=Schedule)
+    #: Without "#"; written after the topic's own hashtag (YouTube shows the first 3 above the title).
+    hashtags: list[str] = Field(default_factory=lambda: ["History"])
+    #: Fixed text ending every long-form description (README §7).
+    description_footer: str = ""
+    #: Fixed line ending every Short's description, before its hashtags.
+    shorts_footer: str = ""
 
 
 class Ops(_Model):
     min_free_gb: int = Field(15, ge=1, le=10_000)
+    #: Upload kits are deleted this long after the video is marked uploaded (or rejected).
     keep_output_days: int = Field(30, ge=1, le=3650)
+    #: Cached images no scene uses, and unused LLM answers, are deleted after this long.
+    keep_cache_days: int = Field(90, ge=1, le=3650)
 
 
 class ChannelConfig(_Model):

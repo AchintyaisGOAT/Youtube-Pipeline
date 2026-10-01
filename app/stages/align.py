@@ -97,7 +97,8 @@ def align_words(words: list[str], heard: list[tuple[str, float, float]]) -> list
     return times
 
 
-def fill_gaps(words: list[str], times: list[tuple[float, float] | None], start: float, end: float) -> list[tuple[float, float]]:
+def fill_gaps(words: list[str], times: list[tuple[float, float] | None], start: float,
+              end: float) -> list[tuple[float, float]]:
     """Spread unmatched words between their matched neighbours (or the given bounds) by
     length; keep everything inside [start, end] and in order."""
     filled: list[tuple[float, float]] = []

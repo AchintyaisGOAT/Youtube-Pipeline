@@ -2,8 +2,7 @@
 
     writer   script, metadata          (config.llm.writer  -> writer_fallback)
     checker  script vs articles        (config.llm.checker, no fallback)
-    worker   gate, scene plan          (config.llm.worker  -> worker_fallback)
-    image    AI illustration fallback  (config.llm.image)
+    worker   gate, image check, scene plan (config.llm.worker -> worker_fallback)
 
 The provider is inferred from the model ID: `gemini-*` goes to Gemini (`google-genai`),
 anything else to Groq's OpenAI-compatible endpoint (`openai` SDK).
@@ -13,6 +12,12 @@ or overloaded raises ``RetryLater`` internally; any other failure (bad model ID,
 request too large for Groq's 8K tokens/min) is logged and the fallback tried. If any
 model in the chain was merely unavailable, ``RetryLater`` reaches the orchestrator and the
 video waits for the next run; only when every model really failed is the error raised.
+
+Two Gemini refusals are recognised at once, not retried for minutes (README §5):
+- 402 "prepayment credits are depleted" — seen live on every model of a free-tier project
+  at once. Gemini is skipped for the rest of the run (`quota.ProviderBlocked`) and an
+  alert sent; a video then waits instead of failing.
+- a 429 naming a per-day quota: that model is done for the day (`quota.QuotaExceeded`).
 
 Every attempt is written to `llm_call`; text responses are cached in `llm_cache` so
 re-runs during development cost nothing. Provider SDKs are imported lazily, so stages
@@ -30,10 +35,10 @@ from typing import Literal
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app import quota
+from app import notify, quota
 from app.config import get_config, get_settings
 from app.db import LlmCache, LlmCall
-from app.quota import RetryLater
+from app.quota import ProviderBlocked, QuotaExceeded, RetryLater
 
 Role = Literal["writer", "checker", "worker"]
 
@@ -72,6 +77,20 @@ def _gemini():
     return _gemini_client
 
 
+_DAILY_QUOTA = re.compile(r"per ?day", re.IGNORECASE)
+
+
+def _status(exc: BaseException) -> int | None:
+    from google.genai import errors as genai_errors
+
+    return getattr(exc, "code", None) if isinstance(exc, genai_errors.APIError) else None
+
+
+def _is_daily_quota(exc: BaseException) -> bool:
+    """A 429 whose quota is a per-day one: retrying within minutes can't help."""
+    return _status(exc) == 429 and bool(_DAILY_QUOTA.search(str(exc)))
+
+
 def _is_transient(exc: BaseException) -> bool:
     """A 503 ("high demand") is transient per Google's own error message — verified live
     that a newly launched Flash model can 503 for minutes under load. A 429
@@ -85,7 +104,7 @@ def _is_transient(exc: BaseException) -> bool:
 
     if isinstance(exc, genai_errors.ServerError | httpx.TransportError):
         return True
-    return isinstance(exc, genai_errors.ClientError) and getattr(exc, "code", None) == 429
+    return isinstance(exc, genai_errors.ClientError) and _status(exc) == 429 and not _is_daily_quota(exc)
 
 
 def _generate_with_retry(model: str, prompt: str, config):
@@ -103,6 +122,13 @@ def _generate_with_retry(model: str, prompt: str, config):
             with attempt:
                 return _gemini().models.generate_content(model=model, contents=prompt, config=config)
     except Exception as exc:
+        if _status(exc) == 402:
+            if quota.block("gemini", str(exc)[:300]):
+                notify.alert(f"Gemini refused this project (402): {str(exc)[:300]} — check AI Studio → Projects")
+            raise ProviderBlocked(f"gemini refused this project: {exc}") from exc
+        if _is_daily_quota(exc):
+            quota.exhaust(model, "daily quota")
+            raise QuotaExceeded(f"{model}: daily quota spent: {exc}") from exc
         if _is_transient(exc):
             raise RetryLater(f"{model} still unavailable after retries: {exc}") from exc
         raise
@@ -231,7 +257,7 @@ def generate(
     for model in models_for(role):
         provider = provider_of(model)
         try:
-            quota.check(session, provider)
+            quota.check(session, provider, model)
         except RetryLater as exc:
             _log(session, model, step, "over_budget", error=exc)
             deferred = exc
@@ -269,36 +295,3 @@ def generate(
         raise deferred
     raise failed or RetryLater(f"no model configured for role {role!r}")
 
-
-def _extract_image(response) -> tuple[bytes, str] | None:
-    content = response.candidates[0].content if response.candidates else None
-    parts = content.parts if content else None
-    if not parts:
-        return None
-    for part in parts:
-        if part.inline_data is not None:
-            return part.inline_data.data, part.inline_data.mime_type
-    return None
-
-
-def generate_image(session: Session, prompt: str, *, attempts: int = 4) -> tuple[bytes, str]:
-    """AI illustration (README §6.1 fallback). Returns (image_bytes, mime_type).
-
-    Verified live that the image model doesn't reliably return an image for the
-    identical prompt — observed an empty response and a text-only description from
-    back-to-back calls — so it retries a few times before raising ValueError. Results
-    aren't cached here (bytes, not JSON); the images stage caches files by prompt hash.
-    """
-    model = get_config().llm.image
-    for _ in range(attempts):
-        quota.check(session, "gemini")
-        try:
-            response = _generate_with_retry(model, prompt, _gemini_config())
-        except RetryLater as exc:
-            _log(session, model, "image", "retry_later", error=exc)
-            raise
-        image = _extract_image(response)
-        _log(session, model, "image", "ok" if image else "error", error=None if image else "no image returned")
-        if image is not None:
-            return image
-    raise ValueError(f"{model} returned no image after {attempts} attempts for prompt: {prompt[:200]!r}")

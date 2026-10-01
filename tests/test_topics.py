@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from app import orchestrator
+from app.config import get_config
 from app.db import Base, Topic, Video, get_engine, get_sessionmaker
 from app.quota import RetryLater
 from app.stages import discover, gate, rank
@@ -62,33 +63,52 @@ def test_trend_score_is_log_scaled():
     assert discover.trend_score(0) == 0.0
 
 
-def test_rank_score_adds_trend_and_relevance():
-    assert rank.score(Topic(raw={"trend": 0.5, "relevance": 8})) == pytest.approx(1.3)
+def test_rank_score_weighs_images_most():
     assert rank.score(Topic(raw=None)) == 0.0
+    rich = rank.score(Topic(raw={"images": 60, "views": 1_000, "relevance": 6}))
+    famous = rank.score(Topic(raw={"images": 16, "views": 1_000_000, "relevance": 10}))
+    assert rich > famous  # the archives decide what can be shown
+    assert rank.score(Topic(raw={"images": 60})) == pytest.approx(2.0)
+    same_images = [rank.score(Topic(raw={"images": 30, "views": v})) for v in (100, 100_000)]
+    assert same_images[1] > same_images[0]  # interest breaks ties
 
 
-def test_rank_picks_best_topic_and_waits_while_a_video_is_in_progress(session_factory):
+def _passed(title, images, **raw):
+    return Topic(source="s", title=title, status=TopicStatus.PASSED, raw={"images": images, **raw})
+
+
+def test_rank_starts_a_batch_of_the_best_illustrated_and_waits_for_it(session_factory, monkeypatch):
+    cfg = get_config().discovery
+    monkeypatch.setattr(cfg, "batch_size", 2)
     with session_factory() as session:
-        weak = Topic(source="s", title="A", status=TopicStatus.PASSED, raw={"trend": 0.2, "relevance": 5})
-        strong = Topic(source="s", title="B", status=TopicStatus.PASSED, raw={"trend": 1.0, "relevance": 9})
-        session.add_all([weak, strong])
+        topics = [_passed("Rich", 50), _passed("Richer", 58), _passed("Thin", 9), _passed("Fine", 30)]
+        session.add_all(topics)
         session.commit()
 
         rank.run(session)
         session.commit()
-        videos = session.query(Video).all()
-        assert [v.topic_id for v in videos] == [strong.id]
-        assert strong.status == TopicStatus.USED
+        assert {session.get(Topic, v.topic_id).title for v in session.query(Video)} == {"Richer", "Rich"}
+        assert topics[2].status == TopicStatus.PASSED  # under min_images: never picked
 
-        rank.run(session)  # the first video is still in progress -> nothing new starts
-        session.commit()
-        assert session.query(Video).count() == 1
+        rank.run(session)  # the batch is still being built -> nothing new starts
+        assert session.query(Video).count() == 2
 
-        videos[0].status = Status.APPROVED  # handed over to you -> next one may start
+        for video in session.query(Video):
+            video.status = Status.PACKAGED  # built, waiting for review -> the next batch may start
         session.commit()
         rank.run(session)
         session.commit()
-        assert {v.topic_id for v in session.query(Video)} == {strong.id, weak.id}
+        assert session.query(Video).count() == 3  # only "Fine" qualifies
+
+
+def test_rank_waits_while_the_review_queue_is_full(session_factory, monkeypatch):
+    monkeypatch.setattr(get_config().discovery, "max_waiting_review", 2)
+    with session_factory() as session:
+        session.add_all([Video(title="a", status=Status.PACKAGED), Video(title="b", status=Status.APPROVED),
+                         _passed("Rich", 50)])
+        session.commit()
+        rank.run(session)
+        assert session.query(Video).count() == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -122,10 +142,25 @@ def fake_wikipedia(monkeypatch):
         page = lambda title, desc: {"titles": {"normalized": title}, "description": desc, "extract": "…"}  # noqa: E731
         return [
             {"year": 2024, "text": "A hurricane.", "pages": [page("Hurricane Helene", "2024 hurricane")]},
-            {"year": 1540, "text": "Jesuits approved.", "pages": [page("Society of Jesus", "Catholic religious order")]},
+            {"year": 1540, "text": "Jesuits approved.",
+             "pages": [page("Society of Jesus", "Catholic religious order")]},
             {"year": 1453, "text": "Siege.", "pages": [page("Fall of Constantinople", "1453 capture")]},
         ]
 
+    catalog = {"Money order": "Type of payment", "SS Pacific (1850)": "Paddle steamer lost in 1856"}
+
+    def all_links(page, limit=5000):
+        calls["catalog"] = calls.get("catalog", 0) + 1
+        return list(catalog)
+
+    real_describe = describe
+
+    def describe(titles):  # noqa: F811 — the catalog's subjects too
+        found = real_describe(titles)
+        found |= {t: {"title": t, "description": catalog[t], "extract": "…"} for t in titles if t in catalog}
+        return found
+
+    monkeypatch.setattr(discover.wikipedia, "all_links", all_links)
     monkeypatch.setattr(discover, "_fetch_top_articles", top_articles)
     monkeypatch.setattr(discover.wikipedia, "describe_pages", describe)
     monkeypatch.setattr(discover, "_fetch_on_this_day", on_this_day)
@@ -139,9 +174,11 @@ def test_discover_merges_sources_prefilters_and_dedupes(session_factory, fake_wi
         session.commit()
         topics = {t.title: t for t in session.query(Topic)}
 
-    # Roblox (pre-filter), Main Page (meta) and the 2024 hurricane (post-2000) are gone;
-    # "Fall of Constantinople" is found by both sources but stored once, via the redirect.
-    assert set(topics) == {"Society of Jesus", "Fall of Constantinople", "Lizzie Borden"}
+    # Roblox (pre-filter), Main Page (meta), the 2024 hurricane (post-2000) and the catalog's
+    # "Money order" (a type of thing, not a story) are gone; "Fall of Constantinople" is found
+    # by two sources but stored once, via the redirect.
+    assert set(topics) == {"Society of Jesus", "Fall of Constantinople", "Lizzie Borden", "SS Pacific (1850)"}
+    assert topics["SS Pacific (1850)"].source == "catalog"
     assert all(t.status == TopicStatus.CANDIDATE for t in topics.values())
     assert topics["Society of Jesus"].raw["years_ago"] == 486
     assert topics["Lizzie Borden"].raw["trend"] == pytest.approx(discover.trend_score(4))
@@ -158,7 +195,7 @@ def test_discover_waits_while_topics_are_waiting_unless_forced(session_factory, 
         discover.run(session, force=True)
         session.commit()
         assert fake_wikipedia["pageviews"] == 2
-        assert session.query(Topic).count() == 3  # nothing new: every title already known
+        assert session.query(Topic).count() == 4  # nothing new: every title already known
 
 
 def test_stale_passed_topics_expire_and_let_discovery_run(session_factory, fake_wikipedia):
@@ -285,3 +322,9 @@ def test_broken_gate_vetoes_candidates_so_discovery_is_not_blocked(session_facto
         topics = session.query(Topic).all()
         assert {t.status for t in topics} == {TopicStatus.VETOED}
         assert all("garbage" in t.rationale for t in topics)
+
+
+def test_gate_reads_a_relevance_sent_as_text():
+    from app.stages import gate
+
+    assert gate._as_number("7") == 7.0 and gate._as_number(8) == 8.0 and gate._as_number("high") == 0.0

@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 client_secret.json
+.claude
 token.json
 *.pem
 *.key
@@ -11,8 +12,12 @@ token.json
 data/
 work/
 output/
-assets/
 models/
+# assets/: the audio files stay local, but each folder's manifest.yaml is committed —
+# it holds every track's license and required credit, which must survive a new machine.
+assets/**
+!assets/*/
+!assets/*/manifest.yaml
 *.mp4
 *.mov
 *.wav

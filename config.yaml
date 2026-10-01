@@ -4,13 +4,12 @@
 timezone: "America/New_York"
 
 channel:
-  name: "OurGreatHistory"
-  handle: "@OurGreatHistory"
+  name: "PantherTellsHistory"
+  handle: "@PantherTellsHistory"
   audience: "curious people who want to be entertained, not lectured at"
   tone: >-
     energetic, fun, fast-paced, a little cheeky -- like a friend telling you the wildest true
     story they know, never a dry lecture; always accurate and sourced
-  language: "en-US"
 
 topics:                         # README §4.3
   in_scope:
@@ -24,8 +23,23 @@ topics:                         # README §4.3
     - "medical, legal, or financial advice"
 
 discovery:                      # README §4.1 — runs when no passed topic is waiting
-  sources: ["trending", "on_this_day"]
-  max_candidates: 20
+  sources: ["catalog", "trending", "on_this_day"]
+  batch_size: 5                 # videos started together; the next batch when all are built
+  min_images: 15                # usable free images a topic needs (counted by the survey)
+  quick_min_images: 5           # the survey's quick count only drops topics below this
+  survey_top: 8                 # topics given the full image survey per run
+  max_waiting_review: 10        # no new batch while this many wait for review/upload
+  max_candidates: 20            # from trending + on_this_day together
+  catalog_candidates: 40        # sampled from the catalog pages each discovery
+  catalog_pages:                # Wikipedia list pages whose links are candidate subjects
+    - "Wikipedia:Vital articles/Level/4/History"
+    - "List of unsolved murders (before 1900)"
+    - "List of unsolved murders (1900–1979)"
+    - "List of serial killers before 1900"
+    - "List of assassinations"
+    - "List of maritime disasters in the 19th century"
+    - "List of heists"
+    - "List of hoaxes"
   min_relevance: 6              # gate relevance (0-10) needed to pass
   max_topic_age_days: 7         # unused passed topics expire after this
 
@@ -35,7 +49,15 @@ llm:                            # README §5 — confirm IDs/limits in AI Studio
   checker: "gemini-3.5-flash"   # script vs articles; must differ from writer (see README §12)
   worker: "openai/gpt-oss-120b" # gate + scene plan
   worker_fallback: "gemini-3.5-flash-lite"
-  image: "gemini-3.1-flash-image"   # AI illustration fallback only
+  # Free-tier requests per day, per model — the RPD column of aistudio.google.com/rate-limit
+  # (read 2026-09-30; they change; Gemini's day starts at midnight Pacific).
+  # A model left out has no local cap; Google's own refusal still stops it.
+  daily_requests:
+    gemini-3.8-flash: 20        # 5 requests/min
+    gemini-3.5-flash-lite: 500  # 15 requests/min
+    gemini-3.5-flash: 20        # 5 requests/min
+    # Every image model (Nano Banana 2 etc.) is 0/day on the free tier: videos use only
+    # real archive images (README §6.1).
 
 research:
   linked_articles: 3            # extra Wikipedia articles linked from the lead section
@@ -58,14 +80,13 @@ video:                          # README §6.4
   encoder: "auto"               # auto = h264_qsv if it works, else libx264
 
 images:                         # README §6.1
-  sources: ["wikimedia_commons", "smithsonian"]   # Smithsonian needs SMITHSONIAN_API_KEY
-  ai_fallback: true             # false = never generate AI images
-  ai_max_per_video: 20          # beyond this, scenes reuse images instead
-  ai_style: >-                  # a live test drew two framed panels and a word, hence the last line
-    Vintage historical illustration in the style of a period engraving or print, muted
-    colors, fine linework. One single full-frame scene filling the whole 16:9 widescreen
-    image: no border, no frame, no panels, no text or lettering.
-  max_images: 80
+  # All searched for the image pool (app/archives.py); smithsonian and europeana need their
+  # free keys in .env and are skipped without them.
+  sources: ["wikimedia_commons", "openverse", "met", "artic", "cleveland", "smithsonian", "europeana"]
+  max_images: 60                # most images one video's inventory keeps
+  min_per_video: 8              # fewest checked images a script can be written around
+  seconds_per_image: 9          # average passage per image; sets the video's length
+  max_uses: 2                   # passages one image may illustrate (never two in a row)
 
 voice:                          # README §6.2 — verify IDs against the kokoro-onnx voice list
   primary: "bm_george"
@@ -77,7 +98,7 @@ alignment:
   whisper_model: "small.en"
 
 subtitles:                      # README §6.4
-  font_file: "assets/fonts/Inter-Regular.ttf"   # else first assets/fonts/*.ttf, else Arial
+  font_file: "C:/Windows/Fonts/arial.ttf"   # the channel font (bold is used for thumbnails)
   size: 64                      # real pixels on the 1920x1080 long-form
   shorts_size: 84               # real pixels on the 1080x1920 Shorts
   words_per_caption: 4
@@ -99,7 +120,16 @@ publish:                        # README §7 — goes into each upload kit's che
   schedule:
     long_form: ["Tue 15:00", "Fri 15:00"]
     shorts: ["daily 12:00"]
+  hashtags: ["History", "PantherTellsHistory"]   # after the topic's own hashtag; the first 3 show above the title
+  # Ends every long-form description, after the chapters, sources and credits.
+  description_footer: |-
+    💬 Which part surprised you most? Tell us in the comments.
+    🔔 A new true story every Tuesday and Friday, and a new Short every day.
+    ℹ️ How this video is made: the script is researched from the Wikipedia articles listed above and fact-checked against them before publishing. The narration is an AI voice. Spotted a mistake? Comment and we'll pin a correction.
+  # Ends every Short's description, before its hashtags.
+  shorts_footer: "▶ Full story: tap the video linked below."
 
 ops:
   min_free_gb: 15
-  keep_output_days: 30
+  keep_output_days: 30          # upload kits kept this long after "uploaded" / "rejected"
+  keep_cache_days: 90           # unused cached images + LLM answers kept this long

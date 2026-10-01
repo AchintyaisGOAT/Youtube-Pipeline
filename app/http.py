@@ -5,7 +5,7 @@ here — never build an ad-hoc ``httpx.Client`` elsewhere.
 from __future__ import annotations
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app import __version__
 from app.config import get_settings
@@ -35,10 +35,19 @@ def get_http_client() -> httpx.Client:
     return _client
 
 
+def is_transient(exc: BaseException) -> bool:
+    """Worth retrying: a dropped connection or timeout, a 429 or a 5xx. A 404 or 403 is an
+    answer, not a blip — retrying it only wasted ~1 minute per call (5 tries with backoff)."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    return isinstance(exc, httpx.HTTPStatusError) and (
+        exc.response.status_code == 429 or exc.response.status_code >= 500)
+
+
 #: Shared retry policy for flaky external calls — apply as a decorator:
 #: ``@http_retry`` above a function that calls ``get_http_client()``.
 http_retry = retry(
-    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+    retry=retry_if_exception(is_transient),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(5),
     reraise=True,

@@ -1,4 +1,4 @@
-You are the researcher for OurGreatHistory, a history YouTube channel. The next video is
+You are the researcher for PantherTellsHistory, a history YouTube channel. The next video is
 about the Wikipedia article "{title}":
 
 {summary}

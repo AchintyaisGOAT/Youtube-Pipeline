@@ -138,7 +138,8 @@ def build_subtitles(
         primarycolor=pysubs2.Color(255, 255, 255), secondarycolor=highlight_color,
         outlinecolor=pysubs2.Color(0, 0, 0), backcolor=pysubs2.Color(0, 0, 0, 128),
         borderstyle=1, outline=max(2, round(size * 0.07)), shadow=0,
-        alignment=pysubs2.Alignment(_ALIGNMENT[subs.position]), marginl=round(width * 0.06), marginr=round(width * 0.06),
+        alignment=pysubs2.Alignment(_ALIGNMENT[subs.position]),
+        marginl=round(width * 0.06), marginr=round(width * 0.06),
         marginv=round(height * (0.07 if subs.position != "center" else 0)),
     )
     ass.styles["Default"] = style

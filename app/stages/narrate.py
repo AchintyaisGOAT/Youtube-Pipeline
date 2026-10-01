@@ -93,7 +93,7 @@ def pause_after(text: str, paragraph_pause_ms: int) -> float:
 
 def run(session: Session, video_id: uuid.UUID) -> None:
     video = session.get(Video, video_id)
-    if video is None or Status(video.status) != Status.IMAGES_READY:
+    if video is None or Status(video.status) != Status.SEGMENTED:
         return
 
     scenes = list(session.execute(select(Scene).filter_by(video_id=video_id).order_by(Scene.idx)).scalars())

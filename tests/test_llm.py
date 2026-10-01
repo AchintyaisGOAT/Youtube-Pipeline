@@ -195,12 +195,82 @@ def test_gemini_dropped_connection_is_transient():
     assert not llm._is_transient(genai_errors.ClientError(404, {"error": {"message": "not found"}}))
 
 
-def test_generate_image_retries_until_an_image_arrives(session, monkeypatch):
-    empty = types.SimpleNamespace(candidates=[])
-    part = types.SimpleNamespace(inline_data=types.SimpleNamespace(data=b"png", mime_type="image/png"))
-    image = types.SimpleNamespace(candidates=[types.SimpleNamespace(content=types.SimpleNamespace(parts=[part]))])
-    responses = iter([empty, image])
-    monkeypatch.setattr(llm, "_generate_with_retry", lambda model, prompt, config: next(responses))
 
-    assert llm.generate_image(session, "a scene") == (b"png", "image/png")
-    assert [o for _, o in _outcomes(session)] == ["error", "ok"]
+# --------------------------------------------------------------------------- #
+# bundle A: refusals and daily caps never waste calls or fail a video
+# --------------------------------------------------------------------------- #
+def _gemini_raising(monkeypatch, error):
+    calls = []
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs["model"])
+            raise error
+
+    monkeypatch.setattr(llm, "_gemini", lambda: types.SimpleNamespace(models=FakeModels()))
+    monkeypatch.setattr(llm.notify, "alert", lambda message: None)
+    return calls
+
+
+def test_gemini_402_blocks_gemini_for_the_rest_of_the_run(session, monkeypatch):
+    from google.genai import errors as genai_errors
+
+    calls = _gemini_raising(monkeypatch, genai_errors.ClientError(
+        402, {"error": {"message": "Your prepayment credits are depleted."}}))
+    with pytest.raises(quota.ProviderBlocked):
+        llm._generate_with_retry("gemini-3.8-flash", "p", None)
+    assert calls == ["gemini-3.8-flash"]  # not retried
+    with pytest.raises(quota.ProviderBlocked):  # every later Gemini call is skipped without a request
+        quota.check(session, "gemini", "gemini-3.5-flash")
+    quota.check(session, "groq", "openai/gpt-oss-120b")  # Groq is unaffected
+
+
+def test_a_blocked_checker_makes_the_video_wait_not_fail(session, fake_call):
+    behaviour, _ = fake_call
+    quota.block("gemini", "402")
+    behaviour[llm.models_for("checker")[0]] = '{"changes": []}'
+    with pytest.raises(RetryLater):
+        llm.generate(session, "p", role="checker", step="check")
+    assert _outcomes(session) == [(llm.models_for("checker")[0], "over_budget")]
+
+
+def test_writer_waits_when_gemini_is_blocked_and_groq_cannot_fit_the_prompt(session, fake_call):
+    behaviour, _ = fake_call
+    primary, fallback = llm.models_for("writer")
+    quota.block("gemini", "402")
+    behaviour[fallback] = ValueError("413 request too large for 8K tokens/min")
+    with pytest.raises(RetryLater):  # waits for Gemini to come back instead of failing the video
+        llm.generate(session, "p", role="writer", step="script", json_mode=False)
+
+
+def test_daily_quota_429_is_not_retried(session, monkeypatch):
+    from google.genai import errors as genai_errors
+
+    calls = _gemini_raising(monkeypatch, genai_errors.ClientError(
+        429, {"error": {"message": "Quota exceeded: GenerateRequestsPerDayPerProjectPerModel-FreeTier"}}))
+    with pytest.raises(QuotaExceeded):
+        llm._generate_with_retry("gemini-3.8-flash", "p", None)
+    assert calls == ["gemini-3.8-flash"]
+    with pytest.raises(QuotaExceeded):
+        quota.check(session, "gemini", "gemini-3.8-flash")
+    quota.check(session, "gemini", "gemini-3.5-flash")  # other models keep their own quota
+
+
+def test_per_model_daily_cap_from_config(session, monkeypatch):
+    monkeypatch.setattr(get_config().llm, "daily_requests", {"gemini-3.8-flash": 2})
+    for _ in range(2):
+        session.add(LlmCall(provider="gemini", model="gemini-3.8-flash", step="script", outcome="ok"))
+    session.add(LlmCall(provider="gemini", model="gemini-3.5-flash", step="check", outcome="ok"))
+    session.flush()
+    with pytest.raises(QuotaExceeded):
+        quota.check(session, "gemini", "gemini-3.8-flash")
+    quota.check(session, "gemini", "gemini-3.5-flash")
+
+
+def test_gemini_day_starts_at_midnight_pacific():
+    from datetime import UTC, datetime
+
+    # 2026-09-30 06:59 UTC is still 23:59 on the 29th in California (PDT, UTC-7)
+    start = quota.day_start("gemini", datetime(2026, 9, 30, 6, 59, tzinfo=UTC))
+    assert (start.day, start.hour, start.utcoffset().total_seconds()) == (29, 0, -7 * 3600)
+    assert quota.day_start("gemini", datetime(2026, 9, 30, 7, 1, tzinfo=UTC)).day == 30

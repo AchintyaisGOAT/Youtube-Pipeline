@@ -13,7 +13,7 @@ def test_defaults_validate():
 
 def test_committed_config_yaml_validates():
     cfg = load_config("config.yaml")
-    assert cfg.channel.name == "OurGreatHistory"
+    assert cfg.channel.name == "PantherTellsHistory"
     assert cfg.llm.checker != cfg.llm.writer
 
 

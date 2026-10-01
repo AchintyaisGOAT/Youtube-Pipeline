@@ -1,10 +1,18 @@
-"""Discover (README §4.1 step 1): new `topic` rows from two Wikipedia sources.
+"""Discover (README §4.1 step 1): new `topic` rows from three Wikipedia sources.
 
+- **catalog**: subjects linked from Wikipedia's history and true-crime list pages
+  (`discovery.catalog_pages`: Vital articles/History, unsolved murders, serial killers
+  before 1900, assassinations, heists, hoaxes…). Hundreds of story-rich, mostly older
+  subjects — the ones the public-domain archives actually have pictures of. A sample is
+  drawn each time (seeded by the date, so a rerun the same day draws the same sample).
 - **trending**: yesterday's most-viewed English Wikipedia articles (Wikimedia Pageviews).
   Proven audience interest (scored on a log scale of pageview rank), but mostly
   off-niche (celebrities, sports, new films).
 - **on_this_day**: Wikipedia's "On this day" events for today and the next two days.
   Always history, with an anniversary hook; round anniversaries score higher.
+
+The survey stage then counts each passed topic's free images, and rank builds a batch
+from the best-illustrated ones (README §4.1).
 
 Every candidate goes through a free pre-filter on its Wikipedia short description before
 any LLM sees it: meta pages, living people ("born 1983"), anything dated 2000 or later
@@ -22,6 +30,7 @@ topics unused for `discovery.max_topic_age_days` expire first, so the pool stays
 from __future__ import annotations
 
 import math
+import random
 import re
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -53,6 +62,15 @@ _OFF_NICHE = re.compile(
     r"\b(film|films|television|tv series|sitcom|miniseries|video game|game|album|song|single|"
     r"band|rapper|singer|actor|actress|footballer|football club|basketball|baseball|cricketer|"
     r"tennis|golfer|wrestler|esports|youtuber|streamer|influencer|season|reality)\b",
+    re.IGNORECASE,
+)
+#: List pages link places, periods and concepts too: a subject needs a story, not a map.
+_GENERIC = re.compile(
+    r"\b(country|sovereign state|city|town|village|county|state of|u\.s\. state|province|region|"
+    r"capital|continent|river|island|disease|calendar year|day of the year|decade|century|month|"
+    r"language|ethnic group|religion|surname|given name|identifier|political party|academic discipline|"
+    r"field of study|branch of|concept|term|type of|form of|kind of|profession|occupation|genre|planet|"
+    r"website|organization|agency|military rank)\b",
     re.IGNORECASE,
 )
 
@@ -169,6 +187,26 @@ def _on_this_day(limit: int, known: set[str], today: date) -> list[Topic]:
 # --------------------------------------------------------------------------- #
 # stage
 # --------------------------------------------------------------------------- #
+def _catalog(limit: int, known: set[str], pages: list[str], today: date) -> list[Topic]:
+    """A date-seeded sample of the subjects the catalog pages link to."""
+    links = sorted({t for page in pages for t in wikipedia.all_links(page)} - known)
+    random.Random(today.toordinal()).shuffle(links)
+    topics: list[Topic] = []
+    for start in range(0, len(links), wikipedia.BATCH):
+        chunk = [t for t in links[start : start + wikipedia.BATCH] if not t.startswith(_META_PREFIXES)]
+        for page in wikipedia.describe_pages(chunk).values():
+            if page["title"] in known or re.fullmatch(r"\d{1,4}( BC)?", page["title"]):
+                continue
+            if prefilter_reason(page["title"], page["description"]) or _GENERIC.search(page["description"]):
+                continue
+            topics.append(Topic(source="catalog", title=page["title"], summary=page["extract"] or None,
+                                raw={"description": page["description"], "trend": 0.0}))
+            known.add(page["title"])
+            if len(topics) >= limit:
+                return topics
+    return topics
+
+
 def _channel_today(timezone: str) -> date:
     return datetime.now(ZoneInfo(timezone)).date()
 
@@ -203,6 +241,9 @@ def run(session: Session, *, force: bool = False) -> None:
     known = set(session.execute(select(Topic.title)).scalars())
 
     found: list[Topic] = []
+    if "catalog" in sources:
+        found += _catalog(config.discovery.catalog_candidates, known, config.discovery.catalog_pages,
+                          _channel_today(config.timezone))
     if "on_this_day" in sources:
         found += _on_this_day(per_source, known, _channel_today(config.timezone))
     if "trending" in sources:

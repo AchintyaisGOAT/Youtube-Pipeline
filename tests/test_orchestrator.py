@@ -136,7 +136,7 @@ def test_real_error_fails_video_and_rolls_back(session_factory, monkeypatch):
 def test_rank_runs_from_the_orchestrator(session_factory):
     """Regression: rank takes no id; calling it with one used to reject every topic."""
     with session_factory() as session:
-        session.add(Topic(source="s", title="A", status=TopicStatus.PASSED))
+        session.add(Topic(source="s", title="A", status=TopicStatus.PASSED, raw={"images": 40}))
         session.commit()
 
     orchestrator._run_singleton(orchestrator.RANK_STAGE)
@@ -172,3 +172,14 @@ def test_datetimes_round_trip_as_aware_utc(session_factory):
 def test_ogh_requires_a_command():
     with pytest.raises(SystemExit):
         ogh([])
+
+
+def test_http_retries_only_transient_errors():
+    import httpx
+
+    from app.http import is_transient
+
+    request = httpx.Request("GET", "https://example.org/")
+    status = lambda code: httpx.HTTPStatusError("x", request=request, response=httpx.Response(code, request=request))  # noqa: E731
+    assert is_transient(httpx.ConnectTimeout("t")) and is_transient(status(503)) and is_transient(status(429))
+    assert not is_transient(status(404)) and not is_transient(status(403))

@@ -1,5 +1,5 @@
 """Failure notifications: one direct HTTP POST to an ntfy-compatible URL. No `apprise`
-abstraction — a single channel doesn't need one (WORK_FOUNDATION.md §2).
+abstraction — a single channel doesn't need one.
 """
 
 from __future__ import annotations

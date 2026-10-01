@@ -15,16 +15,24 @@ def _storage_base() -> Path:
     return Path(get_settings().storage_base)
 
 
-def work_dir(video_id: uuid.UUID) -> Path:
-    """Scratch space for one video's in-progress intermediates."""
+def work_dir(video_id: uuid.UUID, *, create: bool = True) -> Path:
+    """Scratch space for one video's in-progress intermediates (`create=False`: just the path)."""
     p = _storage_base() / "work" / str(video_id)
+    if create:
+        p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def output_root() -> Path:
+    """data/output/: each video's render folder, then its upload kit."""
+    p = _storage_base() / "output"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def output_dir(video_id: uuid.UUID) -> Path:
-    """Finished, retained outputs (final renders, sidecar files) for one video."""
-    p = _storage_base() / "output" / str(video_id)
+    """Finished renders for one video, until the package stage moves them into its kit."""
+    p = output_root() / str(video_id)
     p.mkdir(parents=True, exist_ok=True)
     return p
 

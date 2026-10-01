@@ -74,7 +74,7 @@ def test_narrate_times_scenes_from_the_audio_with_no_gaps(session_factory, monke
     kokoro = FakeKokoro()
     monkeypatch.setattr(narrate, "_kokoro_instance", lambda: kokoro)
     with session_factory() as session:
-        video = _video(session, Status.IMAGES_READY, [
+        video = _video(session, Status.SEGMENTED, [
             "Four words in here,",                                  # mid-sentence: breath only
             "Lizzie called out: [QUOTE]Come quick![/QUOTE]",         # sentence end: 0.4 s
         ])

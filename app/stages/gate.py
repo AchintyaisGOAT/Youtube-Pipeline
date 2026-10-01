@@ -59,6 +59,14 @@ def _as_int(value) -> int | None:
         return None
 
 
+def _as_number(value) -> float:
+    """The gate's 0–10 relevance, also when the model sends it as text ("7")."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _judge(session: Session, batch: list[Topic]) -> None:
     config = get_config()
     prompt = PROMPT_PATH.read_text(encoding="utf-8").format(
@@ -77,8 +85,7 @@ def _judge(session: Session, batch: list[Topic]) -> None:
             topic.status = TopicStatus.VETOED
             topic.rationale = "gate returned no verdict for this topic"
             continue
-        relevance = verdict.get("relevance")
-        relevance = relevance if isinstance(relevance, int | float) else 0
+        relevance = _as_number(verdict.get("relevance"))
         passed = verdict.get("verdict") == "pass" and relevance >= config.discovery.min_relevance
         topic.status = TopicStatus.PASSED if passed else TopicStatus.VETOED
         topic.rationale = verdict.get("reason") or f"verdict {verdict.get('verdict')!r}"
